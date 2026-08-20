@@ -253,7 +253,7 @@ impl TabBar {
                     div()
                         .w_full()
                         .h(inner_height)
-                        .bg(cx.theme().tokens.background)
+                        .bg(cx.theme().tokens.tab_active)
                         .rounded(inner_radius)
                         .shadow(raised_shadow()),
                 ),
