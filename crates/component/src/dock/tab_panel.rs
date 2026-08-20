@@ -467,6 +467,8 @@ impl TabGroupSkin {
         }
 
         TabBar::new("tab-bar")
+            // The bar passes the variant on to every tab it renders.
+            .with_variant(self.shared.tab_variant())
             .track_scroll(&self.scroll_handle)
             .when(has_leading, |this| {
                 this.prefix(
