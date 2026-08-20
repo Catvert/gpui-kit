@@ -61,12 +61,19 @@ impl DockAreaRenderer for DockSkin {
         // reason this hook is implemented at all.
         div()
             .id(("dock-split-frame", node.as_u64()))
-            // Rounded group frames read as cards; a gutter between them is
-            // what makes them cards rather than notched rectangles.
-            .when(self.shared().tab_variant() != TabVariant::Tab, |this| {
-                this.gap(px(4.))
-            })
             .bg(cx.theme().tokens.tab_bar)
+    }
+
+    /// The split frame holds a single child — the resizable group — so a CSS
+    /// gap on it spaces nothing. Base takes the gap as padding inside the
+    /// slots instead, where the size machinery already accounts for it.
+    fn split_gap(&self, cx: &App) -> Pixels {
+        let _ = cx;
+        if self.shared().tab_variant() != TabVariant::Tab {
+            px(4.)
+        } else {
+            px(0.)
+        }
     }
 
     fn render_dock(
