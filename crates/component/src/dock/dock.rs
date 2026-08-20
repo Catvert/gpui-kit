@@ -23,6 +23,7 @@ use crate::{
     },
     resizable::{render_resize_handle, resize_handle_appearance},
     resize_handle,
+    tab::TabVariant,
 };
 
 /// The payload a dock's resize handle drags. It draws nothing: the handle
@@ -62,6 +63,11 @@ impl DockAreaRenderer for DockSkin {
         // reason this hook is implemented at all.
         div()
             .id(("dock-split-frame", node.as_u64()))
+            // Rounded group frames read as cards; a gutter between them is
+            // what makes them cards rather than notched rectangles.
+            .when(self.shared().tab_variant() != TabVariant::Tab, |this| {
+                this.gap(px(4.))
+            })
             .bg(cx.theme().tokens.tab_bar)
     }
 

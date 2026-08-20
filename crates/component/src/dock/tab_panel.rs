@@ -700,6 +700,12 @@ impl TabGroupRenderer for TabGroupSkin {
         // this. What is left is the background and the two actions.
         div()
             .id("tab-panel")
+            // The classic variant meshes with square, bordered chrome; the
+            // others read as a card, and the frame's clip carries the corner
+            // to the tab bar and the content alike.
+            .when(self.shared.tab_variant() != TabVariant::Tab, |this| {
+                this.rounded(cx.theme().radius_lg)
+            })
             .bg(cx.theme().tokens.background)
             // A collapsed group is a strip of tabs with no content, and the
             // actions act on content. The old dock gated them the same way.

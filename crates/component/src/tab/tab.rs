@@ -198,7 +198,7 @@ impl TabVariant {
                 fg: cx.theme().tab_active_foreground,
                 bg: cx.theme().transparent.into(),
                 inner_bg: if selected {
-                    cx.theme().tokens.background.into()
+                    cx.theme().tokens.tab_active.into()
                 } else {
                     cx.theme().transparent.into()
                 },
@@ -246,7 +246,7 @@ impl TabVariant {
             TabVariant::Segmented => TabStyle {
                 fg: cx.theme().tab_active_foreground,
                 bg: cx.theme().transparent.into(),
-                inner_bg: cx.theme().tokens.background.into(),
+                inner_bg: cx.theme().tokens.tab_active.into(),
                 shadow: true,
                 ..Default::default()
             },
@@ -308,7 +308,7 @@ impl TabVariant {
                 fg: cx.theme().muted_foreground,
                 bg: cx.theme().tokens.tab_bar.into(),
                 inner_bg: if selected {
-                    cx.theme().tokens.background.into()
+                    cx.theme().tokens.tab_active.into()
                 } else {
                     cx.theme().transparent.into()
                 },
