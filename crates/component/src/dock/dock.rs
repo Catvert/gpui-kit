@@ -39,11 +39,21 @@ impl DockAreaRenderer for DockSkin {
     // these return -- so a skin that has no appearance to add returns a bare
     // frame and still gets a dock area the right shape.
     fn frame(&self, _: &mut Window, _: &mut App) -> Stateful<Div> {
-        div().id("dock-area")
+        div()
+            .id("dock-area")
+            // The same gutter the splits get: docks are cards like any other
+            // group, and cards breathe.
+            .when(self.shared().tab_variant() != TabVariant::Tab, |this| {
+                this.gap(px(4.))
+            })
     }
 
     fn center_frame(&self, _: &mut Window, _: &mut App) -> Stateful<Div> {
-        div().id("dock-area-center")
+        div()
+            .id("dock-area-center")
+            .when(self.shared().tab_variant() != TabVariant::Tab, |this| {
+                this.gap(px(4.))
+            })
     }
 
     fn split_frame(&self, node: NodeId, _: Axis, _: &mut Window, cx: &mut App) -> Stateful<Div> {
