@@ -28,6 +28,7 @@ use std::{cell::Cell, rc::Rc};
 use gpui::{App, AppContext as _, Context, Entity, SharedString, WeakEntity, Window, actions};
 
 use crate::scroll::ScrollbarMode;
+use crate::tab::TabVariant;
 
 /// The behavior half of the panel traits, which every panel implements
 /// alongside [`Panel`]. Exported under this name because `Panel` in this
@@ -82,6 +83,7 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) struct SkinShared {
     area: WeakEntity<DockArea>,
     panel_style: Cell<PanelStyle>,
+    tab_variant: Cell<TabVariant>,
     toggle_button_visible: Cell<bool>,
     tiles_scrollbar_mode: Cell<Option<ScrollbarMode>>,
     /// The dock whose resize handle is being dragged, if any. Only one can be.
@@ -95,6 +97,10 @@ impl SkinShared {
 
     pub(crate) fn panel_style(&self) -> PanelStyle {
         self.panel_style.get()
+    }
+
+    pub(crate) fn tab_variant(&self) -> TabVariant {
+        self.tab_variant.get()
     }
 
     pub(crate) fn is_toggle_button_visible(&self) -> bool {
@@ -162,6 +168,7 @@ impl DockSkin {
             shared: Rc::new(SkinShared {
                 area: cx.weak_entity(),
                 panel_style: Cell::new(PanelStyle::default()),
+                tab_variant: Cell::new(TabVariant::default()),
                 toggle_button_visible: Cell::new(true),
                 tiles_scrollbar_mode: Cell::new(None),
                 resizing_dock: Cell::new(None),
@@ -180,6 +187,20 @@ impl DockSkin {
 
     pub fn set_panel_style(&self, style: PanelStyle, cx: &mut App) {
         self.shared.panel_style.set(style);
+        self.shared.notify(cx);
+    }
+
+    /// The [`TabVariant`] tab bars render their tabs with.
+    ///
+    /// [`TabVariant::Tab`], the default, is the classic bordered rectangle;
+    /// an application after a softer look can pick [`TabVariant::Segmented`]
+    /// or any other variant, and every tab group of the area follows.
+    pub fn tab_variant(&self) -> TabVariant {
+        self.shared.tab_variant()
+    }
+
+    pub fn set_tab_variant(&self, variant: TabVariant, cx: &mut App) {
+        self.shared.tab_variant.set(variant);
         self.shared.notify(cx);
     }
 
