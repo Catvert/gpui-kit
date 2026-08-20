@@ -1298,6 +1298,10 @@ impl DockArea {
                 // slot rigid and the split ends short of its container — the
                 // empty strip this picks the *last shown* slot to avoid.
                 let grows = shown.iter().rposition(|shown| *shown);
+                let gap = self.renderer.split_gap(cx);
+                // The gap goes before every shown slot but the first shown
+                // one: a hidden slot must not leave a double band behind it.
+                let first_shown = shown.iter().position(|shown| *shown);
                 let panels: Vec<_> = children
                     .iter()
                     .zip(sizes.iter())
@@ -1305,6 +1309,12 @@ impl DockArea {
                     .map(|(ix, (child, size))| {
                         resizable_panel()
                             .visible(shown[ix])
+                            .when(gap > px(0.) && Some(ix) != first_shown, |panel| {
+                                match axis {
+                                    Axis::Horizontal => panel.pl(gap),
+                                    Axis::Vertical => panel.pt(gap),
+                                }
+                            })
                             .child(self.render_node(child, window, cx))
                             // `flex_none` is what makes the size stick.
                             // `ResizablePanel` sets `flex_grow: 1` on itself,
@@ -1839,6 +1849,15 @@ pub trait DockAreaRenderer: 'static {
         cx: &mut App,
     ) -> Stateful<Div> {
         div().id(("dock-split-frame", node.as_u64()))
+    }
+
+    /// Space between a split's slots, shown as the split frame's background.
+    ///
+    /// Taken as padding inside every slot but the first, so the sizes the
+    /// resize machinery distributes still sum to the container.
+    fn split_gap(&self, cx: &App) -> Pixels {
+        let _ = cx;
+        px(0.)
     }
 
     /// The column holding the center region and the bottom dock.
