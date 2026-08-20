@@ -33,7 +33,7 @@ use crate::{
     dock::{ClosePanel, PanelControl, PanelHandle, PanelStyle, SkinShared, ToggleZoom},
     h_flex,
     menu::DropdownMenu as _,
-    tab::{Tab, TabBar},
+    tab::{Tab, TabBar, TabVariant},
 };
 
 /// Names the tab bar's zoom button in the debug-bounds map, so a test can ask
@@ -466,23 +466,32 @@ impl TabGroupSkin {
             }
         }
 
+        let variant = self.shared.tab_variant();
+        // The boxed corners mesh with the classic bordered tabs; the other
+        // variants draw no such frame, and the boxes would read as leftover
+        // chrome around plain buttons.
+        let boxed = variant == TabVariant::Tab;
+
         TabBar::new("tab-bar")
             // The bar passes the variant on to every tab it renders.
-            .with_variant(self.shared.tab_variant())
+            .with_variant(variant)
             .track_scroll(&self.scroll_handle)
             .when(has_leading, |this| {
                 this.prefix(
                     h_flex()
                         .items_center()
                         .top_0()
-                        // Right -1 for avoid border overlap with the first tab
-                        .right(-px(1.))
-                        .border_r_1()
-                        .border_b_1()
                         .h_full()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.tab_bar)
                         .px_2()
+                        .when(boxed, |this| {
+                            this
+                                // Right -1 for avoid border overlap with the first tab
+                                .right(-px(1.))
+                                .border_r_1()
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .bg(cx.theme().tokens.tab_bar)
+                        })
                         .children(left_button)
                         .children(bottom_button),
                 )
@@ -660,11 +669,13 @@ impl TabGroupSkin {
                         .items_center()
                         .top_0()
                         .right_0()
-                        .border_l_1()
-                        .border_b_1()
                         .h_full()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.tab_bar)
+                        .when(boxed, |this| {
+                            this.border_l_1()
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .bg(cx.theme().tokens.tab_bar)
+                        })
                         .px_2()
                         .gap_1()
                         .children(
