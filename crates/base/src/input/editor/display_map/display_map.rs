@@ -164,6 +164,15 @@ impl DisplayMap {
         self.fold_map.folded_ranges()
     }
 
+    /// Every range that *can* be folded, whether it is folded or not.
+    ///
+    /// What "fold everything" needs: the folded ranges alone say what is
+    /// already closed, never what is left to close.
+    #[inline]
+    pub fn fold_candidates(&self) -> &[FoldRange] {
+        self.fold_map.fold_candidates()
+    }
+
     /// Clear all folds
     pub fn clear_folds(&mut self) {
         self.fold_map.clear_folds();
