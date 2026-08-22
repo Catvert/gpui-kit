@@ -301,6 +301,13 @@ pub struct InputBaseState<M: InputModeKind> {
     /// cursor is the case this exists for: the caret would blink on top of it,
     /// and two cursors on one character say less than one.
     pub(super) cursor_hidden: bool,
+    /// The caret is painted a character wide, in this colour, and does not
+    /// blink.
+    ///
+    /// A modal editor paints its block cursor over the character it covers, and
+    /// an empty line has none: there the caret is all there is to paint, and a
+    /// blinking bar there says insert mode on a line that is not in it.
+    pub(super) caret_block: Option<gpui::Hsla>,
     pub(super) loading: bool,
     /// Range in UTF-8 length for the selected text.
     ///
@@ -643,6 +650,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             cursor_surrounding_lines: None,
             blink_cursor,
             cursor_hidden: false,
+            caret_block: None,
             undo_manager,
             selected_range: Selection::default(),
             selected_word_range: None,
@@ -2380,7 +2388,9 @@ impl<M: InputModeKind> InputBaseState<M> {
         (self.focus_handle.is_focused(window) || M::is_context_menu_open(self, cx))
             && !self.disabled
             && !self.cursor_hidden
-            && self.blink_cursor.read(cx).visible()
+            // A block caret is painted whole: blinking is what a bar does to be
+            // found, and a block is found already.
+            && (self.caret_block.is_some() || self.blink_cursor.read(cx).visible())
             && window.is_window_active()
     }
 
@@ -2405,11 +2415,47 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
 
         self.cursor_hidden = hidden;
+        let blink = !hidden && self.caret_block.is_none();
         self.blink_cursor.update(cx, |blink_cursor, cx| {
-            if hidden {
-                blink_cursor.stop(cx);
-            } else {
+            if blink {
                 blink_cursor.start(cx);
+            } else {
+                blink_cursor.stop(cx);
+            }
+        });
+        cx.notify();
+    }
+
+    /// The colour of the block caret, if one has been asked for.
+    pub fn caret_block(&self) -> Option<gpui::Hsla> {
+        self.caret_block
+    }
+
+    /// Paints the caret as a block a character wide, in `colour`, or gives back
+    /// the ordinary bar with `None`.
+    ///
+    /// It is the other half of [`Self::set_cursor_hidden`], and a modal editor
+    /// needs both: over a character it hides the caret and paints its own block,
+    /// which is a background the glyph shows through; where there is no
+    /// character — an empty line, the end of the file — there is nothing to
+    /// paint over, and the caret itself has to be the block. A bar there, and a
+    /// blinking one, reads as insert mode on a line that is not in it.
+    ///
+    /// A block does not blink: blinking is how a bar gets itself found, and a
+    /// block is found already. The blinking is stopped rather than left running
+    /// under it — it is a repaint of the window twice a second.
+    pub fn set_caret_block(&mut self, colour: Option<gpui::Hsla>, cx: &mut Context<Self>) {
+        if self.caret_block == colour {
+            return;
+        }
+
+        self.caret_block = colour;
+        let blink = colour.is_none() && !self.cursor_hidden;
+        self.blink_cursor.update(cx, |blink_cursor, cx| {
+            if blink {
+                blink_cursor.start(cx);
+            } else {
+                blink_cursor.stop(cx);
             }
         });
         cx.notify();
