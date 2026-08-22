@@ -955,6 +955,22 @@ impl LineLayout {
         window: &mut Window,
         cx: &mut App,
     ) {
+        // Backgrounds first, then the glyphs on top of them. `paint` draws
+        // glyphs, underlines and strikethroughs only: a run's `background_color`
+        // is `paint_background`'s to draw, and nothing in the input called it, so
+        // a decoration that set one — the documented way for an application to
+        // mark a range — was silently invisible.
+        for (ix, line) in self.wrapped_lines.iter().enumerate() {
+            _ = line.paint_background(
+                pos + point(self.line_indent(ix), ix * line_height),
+                line_height,
+                text_align,
+                align_width,
+                window,
+                cx,
+            );
+        }
+
         for (ix, line) in self.wrapped_lines.iter().enumerate() {
             _ = line.paint(
                 pos + point(self.line_indent(ix), ix * line_height),
