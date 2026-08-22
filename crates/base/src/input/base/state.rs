@@ -489,6 +489,18 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.input_bounds
     }
 
+    /// The size of the scrollable content, as the last paint measured it.
+    ///
+    /// Zero before the first layout. Together with [`Self::input_bounds`] it
+    /// gives the vertical travel an application may scroll through —
+    /// `(input_bounds().size.height - scroll_size().height).min(px(0.))..px(0.)`
+    /// is the very range [`Self::set_scroll_offset`] clamps to. Wrapped lines,
+    /// folded ranges and the room kept under the last line are all counted in,
+    /// none of which can be worked out from the line count alone.
+    pub fn scroll_size(&self) -> gpui::Size<Pixels> {
+        self.scroll_size
+    }
+
     pub fn text_bounds(&self) -> Option<Bounds<Pixels>> {
         self.last_bounds
     }
