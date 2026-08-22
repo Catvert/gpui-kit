@@ -10115,6 +10115,46 @@ impl InputBaseState<crate::input::TextareaMode> {
     }
 }
 
+/// Folding, driven from outside the editor.
+///
+/// The gutter icons fold from inside the element, which is enough for a mouse
+/// and nothing else: an application that gives its editor modal keys — vim's
+/// `zc`, `zo`, `za`, `zM`, `zR` — has no way in, `display_map` being private.
+/// These five are that way in, and they are the same three calls the icon
+/// makes.
+impl InputBaseState<crate::input::EditorMode> {
+    /// The line ranges that can be folded, in the order the highlighter gave
+    /// them. A line is named by the **buffer** line its fold starts on, which
+    /// is what every other call here takes.
+    pub fn fold_candidates(&self) -> Vec<crate::input::FoldRange> {
+        self.display_map.fold_candidates().to_vec()
+    }
+
+    /// Whether a fold starts on that line at all.
+    pub fn is_fold_candidate(&self, line: usize) -> bool {
+        self.display_map.is_fold_candidate(line)
+    }
+
+    /// Whether the fold starting on that line is closed.
+    pub fn is_folded_at(&self, line: usize) -> bool {
+        self.display_map.is_folded_at(line)
+    }
+
+    /// Closes or opens the fold starting on that line. Does nothing on a line
+    /// that starts no fold.
+    pub fn set_folded(&mut self, line: usize, folded: bool, cx: &mut Context<Self>) {
+        self.display_map.set_folded(line, folded);
+        cx.notify();
+    }
+
+    /// Opens every fold at once. Cheaper than walking the candidates, and the
+    /// only one of these that the fold map already had a name for.
+    pub fn unfold_all(&mut self, cx: &mut Context<Self>) {
+        self.display_map.clear_folds();
+        cx.notify();
+    }
+}
+
 /// Methods that only a source-code editor offers.
 impl InputBaseState<crate::input::EditorMode> {
     /// Create a source-code editor state.
