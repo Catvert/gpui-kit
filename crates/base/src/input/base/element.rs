@@ -923,10 +923,15 @@ impl<M: InputModeKind> TextElement<M> {
         cx: &mut App,
     ) -> Vec<Path<Pixels>> {
         let state = self.state.read(cx);
-        if !state.focus_handle.is_focused(window) {
-            return vec![];
-        }
-
+        // The selections are laid out whether or not the input has the focus.
+        //
+        // Losing the focus does not cancel them — see `on_blur`, which says
+        // so: a menu that copies takes the focus handle, and the text has to
+        // still be selected when the menu's Copy runs. Refusing to *draw* them
+        // there undid that on the one gesture it was meant for: right-clicking
+        // a selection showed the menu over a text that no longer looked
+        // selected. What is painted instead, at the paint site, is the dimmed
+        // tone every editor uses for an inactive selection.
         let active_id = state.active_selection().id;
         let mut paths = Vec::new();
 
@@ -3020,8 +3025,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 }
             }
 
+            // Dimmed when the focus is elsewhere: the selection is still
+            // there and still copyable, and saying so is what the menus that
+            // take the focus need.
+            let focused = self.state.read(cx).focus_handle.is_focused(window);
+            let selection_color = if focused {
+                editor_style.selection
+            } else {
+                secondary_selection
+            };
             for path in prepaint.selection_paths.drain(..) {
-                window.paint_path(path, editor_style.selection);
+                window.paint_path(path, selection_color);
             }
 
             // Paint hover highlight
