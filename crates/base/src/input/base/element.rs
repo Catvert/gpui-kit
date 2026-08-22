@@ -514,7 +514,7 @@ impl<M: InputModeKind> TextElement<M> {
         last_layout: &LastLayout,
         bounds: &mut Bounds<Pixels>,
         scroll_size: Size<Pixels>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut App,
     ) -> (Vec<CursorRenderInfo>, Point<Pixels>, Option<usize>) {
         let state = self.state.read(cx);
@@ -556,7 +556,27 @@ impl<M: InputModeKind> TextElement<M> {
             line_origin
         };
 
-        let cursor_height = 0.85 * line_height;
+        // A block caret takes the whole line and one character's advance: it
+        // stands in for a modal editor's block where there is no character to
+        // paint one over. The advance is the font's own, read from the style
+        // the editor was laid out under.
+        let block = state.caret_block.is_some();
+        let cursor_height = if block {
+            line_height
+        } else {
+            0.85 * line_height
+        };
+        let cursor_width = if block {
+            let style = window.text_style();
+            let font_size = style.font_size.to_pixels(window.rem_size());
+            let font = window.text_system().resolve_font(&style.font());
+            window
+                .text_system()
+                .em_advance(font, font_size)
+                .unwrap_or(CURSOR_WIDTH)
+        } else {
+            CURSOR_WIDTH
+        };
 
         for selection in state.selections.iter() {
             let is_active = selection.id == active_id;
@@ -688,7 +708,7 @@ impl<M: InputModeKind> TextElement<M> {
                         cursor_x,
                         bounds.top() + cursor_pos.y + ((line_height - cursor_height) / 2.),
                     ),
-                    size(CURSOR_WIDTH, cursor_height),
+                    size(cursor_width, cursor_height),
                 ),
                 is_active,
             });
@@ -2892,7 +2912,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (focus_handle, show_cursor, disabled, selected_range, editor_style, editor_paddings) = {
+        let (
+            focus_handle,
+            show_cursor,
+            disabled,
+            selected_range,
+            editor_style,
+            editor_paddings,
+            caret_block,
+        ) = {
             let state = self.state.read(cx);
             (
                 state.focus_handle.clone(),
@@ -2901,9 +2929,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 *state.active_selection(),
                 state.editor_style.clone(),
                 state.editor_paddings,
+                state.caret_block,
             )
         };
         let focused = focus_handle.is_focused(window);
+        // A block caret is painted in the colour the application asked for; the
+        // bar keeps the theme's.
+        let caret_colour = caret_block.unwrap_or(editor_style.caret);
         let bounds = prepaint.bounds;
         let text_align = prepaint.last_layout.text_align;
 
@@ -3124,7 +3156,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         // Paint blinking cursors (shared blink state for all carets)
         if focused && show_cursor {
             for cursor_info in prepaint.cursor_infos_with_scroll() {
-                window.paint_quad(fill(cursor_info.bounds, editor_style.caret));
+                window.paint_quad(fill(cursor_info.bounds, caret_colour));
             }
         }
 
