@@ -1296,8 +1296,20 @@ impl DockArea {
                 // actually drawn. A hidden slot renders nothing and grows
                 // nothing, so making it the flexible one leaves every drawn
                 // slot rigid and the split ends short of its container — the
-                // empty strip this picks the *last shown* slot to avoid.
-                let grows = shown.iter().rposition(|shown| *shown);
+                // empty strip this picks a *shown* slot to avoid.
+                //
+                // And an **unconstrained** one where there is one: the last
+                // slot is very often the one a caller has just pinned — a
+                // panel split off with a size of its own — and handing the
+                // growth to it is handing it everything the split has over,
+                // so the 260px it asked for is drawn at whatever half the
+                // container happens to be. A slot nobody sized is exactly the
+                // slot whose business it is to take the leftover.
+                let grows = sizes
+                    .iter()
+                    .enumerate()
+                    .rposition(|(ix, size)| shown[ix] && size.is_none())
+                    .or_else(|| shown.iter().rposition(|shown| *shown));
                 let gap = self.renderer.split_gap(cx);
                 // The gap goes before every shown slot but the first shown
                 // one: a hidden slot must not leave a double band behind it.
@@ -2563,6 +2575,152 @@ mod tests {
         assert!(
             (top - bottom).abs() <= (top + bottom) * 0.02,
             "the two halves must be within 2% of each other, got {top} and {bottom}"
+        );
+    }
+
+    /// A slot split off with an explicit size is **drawn** at that size.
+    ///
+    /// The growth slot is the one that absorbs whatever the others leave
+    /// over. Handing that job to the last slot hands it to the very one the
+    /// caller has just pinned: a panel split off 260px tall came out half the
+    /// height of its neighbour, while the state's `sizes` went on saying 260 —
+    /// so the first drag of its handle computed from a size nothing on screen
+    /// had, and the separator would not follow the pointer.
+    #[gpui::test]
+    fn a_slot_split_off_with_a_size_is_drawn_at_it(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, panels, cx) = one_group(&log, &["Alpha", "Beta"], None, cx);
+        let group = child_node(&area, 0, cx);
+        let beta = panel_id_of(&panels[1]);
+
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.move_panel(
+                    beta,
+                    InsertTarget::Split {
+                        node: group,
+                        placement: Placement::Bottom,
+                        size: Some(px(260.)),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        let wrapper = child_node(&area, 0, cx);
+        let (sizes, container) = cx.read(|cx| {
+            let state = area.read(cx).splits[&wrapper].entity.read(cx);
+            (state.sizes().clone(), state.container_size())
+        });
+        assert_eq!(sizes.len(), 2, "the drop splits the group in two");
+        let total: f32 = sizes.iter().map(|size| size.as_f32()).sum();
+        assert!(
+            (total - container.as_f32()).abs() <= 4.,
+            "what the slots are recorded at has to add up to the container \
+             they are drawn in, got {sizes:?} in {container:?}"
+        );
+        assert!(
+            (sizes[1].as_f32() - 260.).abs() <= 4.,
+            "the new slot keeps the size it was split off with, got {sizes:?}"
+        );
+    }
+
+    /// The same, when what is split is the region's **root** rather than a
+    /// container inside it — which is what an application asking for "under
+    /// the whole centre" writes.
+    #[gpui::test]
+    fn splitting_the_root_leaves_a_separator_that_moves(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, panels, cx) = one_group(&log, &["Alpha", "Beta"], None, cx);
+        let root = cx.read(|cx| {
+            area.read(cx)
+                .layout(DockPlacement::Center)
+                .unwrap()
+                .root()
+                .id()
+        });
+        let beta = panel_id_of(&panels[1]);
+
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.move_panel(
+                    beta,
+                    InsertTarget::Split {
+                        node: root,
+                        placement: Placement::Bottom,
+                        size: Some(px(260.)),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        let root = cx.read(|cx| {
+            area.read(cx)
+                .layout(DockPlacement::Center)
+                .unwrap()
+                .root()
+                .id()
+        });
+        let state = cx.read(|cx| area.read(cx).splits[&root].entity.clone());
+        let before = cx.read(|cx| state.read(cx).sizes().clone());
+        assert_eq!(before.len(), 2, "the root split holds the two slots");
+        cx.update(|window, cx| {
+            state.update(cx, |state, cx| state.resize_panel(0, px(120.), window, cx))
+        });
+        cx.run_until_parked();
+
+        let sizes = cx.read(|cx| state.read(cx).sizes().clone());
+        assert!(
+            (sizes[0].as_f32() - 120.).abs() <= 4.,
+            "the separator goes where it was pulled, got {sizes:?} from {before:?}"
+        );
+    }
+
+    /// Dragging the separator of a slot that was split off with a size moves
+    /// it where the pointer asked, and not halfway there.
+    #[gpui::test]
+    fn a_sized_slot_can_still_be_dragged_to_a_new_size(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, panels, cx) = one_group(&log, &["Alpha", "Beta"], None, cx);
+        let group = child_node(&area, 0, cx);
+        let beta = panel_id_of(&panels[1]);
+
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.move_panel(
+                    beta,
+                    InsertTarget::Split {
+                        node: group,
+                        placement: Placement::Bottom,
+                        size: Some(px(260.)),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        let wrapper = child_node(&area, 0, cx);
+        let state = cx.read(|cx| area.read(cx).splits[&wrapper].entity.clone());
+        // What a drag of the separator does, by the same path: the top slot
+        // is asked for a height, twice, as a pointer held still would.
+        for _ in 0..1 {
+            cx.update(|window, cx| {
+                state.update(cx, |state, cx| state.resize_panel(0, px(120.), window, cx))
+            });
+            cx.run_until_parked();
+        }
+
+        let sizes = cx.read(|cx| state.read(cx).sizes().clone());
+        assert!(
+            (sizes[0].as_f32() - 120.).abs() <= 4.,
+            "the separator goes where it was pulled, got {sizes:?}"
         );
     }
 
