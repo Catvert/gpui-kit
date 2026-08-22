@@ -295,6 +295,12 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) scroll_beyond_last_line: Option<usize>,
     pub(super) cursor_surrounding_lines: Option<usize>,
     pub(super) blink_cursor: Entity<BlinkCursor>,
+    /// The caret is not painted at all, and does not blink.
+    ///
+    /// For a control that draws a cursor of its own — a modal editor's block
+    /// cursor is the case this exists for: the caret would blink on top of it,
+    /// and two cursors on one character say less than one.
+    pub(super) cursor_hidden: bool,
     pub(super) loading: bool,
     /// Range in UTF-8 length for the selected text.
     ///
@@ -624,6 +630,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             scroll_beyond_last_line: None,
             cursor_surrounding_lines: None,
             blink_cursor,
+            cursor_hidden: false,
             undo_manager,
             selected_range: Selection::default(),
             selected_word_range: None,
@@ -2360,14 +2367,48 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub(crate) fn show_cursor(&self, window: &Window, cx: &App) -> bool {
         (self.focus_handle.is_focused(window) || M::is_context_menu_open(self, cx))
             && !self.disabled
+            && !self.cursor_hidden
             && self.blink_cursor.read(cx).visible()
             && window.is_window_active()
     }
 
-    fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.blink_cursor.update(cx, |cursor, cx| {
-            cursor.start(cx);
+    /// Whether the caret is hidden.
+    pub fn is_cursor_hidden(&self) -> bool {
+        self.cursor_hidden
+    }
+
+    /// Hides the caret, or brings it back.
+    ///
+    /// The selection, the keys and the focus are untouched: only the painting of
+    /// the caret goes away. It is what a control that draws a cursor of its own
+    /// needs — a modal editor's block cursor, where the caret would blink on top
+    /// of the block — and it is not `disabled`, which dims the text as well.
+    ///
+    /// The blinking is stopped with it rather than left to run behind a caret
+    /// nobody paints: a blink is a repaint of the window twice a second, for as
+    /// long as the input has the focus.
+    pub fn set_cursor_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        if self.cursor_hidden == hidden {
+            return;
+        }
+
+        self.cursor_hidden = hidden;
+        self.blink_cursor.update(cx, |blink_cursor, cx| {
+            if hidden {
+                blink_cursor.stop(cx);
+            } else {
+                blink_cursor.start(cx);
+            }
         });
+        cx.notify();
+    }
+
+    fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.cursor_hidden {
+            self.blink_cursor.update(cx, |cursor, cx| {
+                cursor.start(cx);
+            });
+        }
         cx.emit(InputEvent::Focus);
     }
 
@@ -2429,6 +2470,10 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     pub(super) fn pause_blink_cursor(&mut self, cx: &mut Context<Self>) {
+        if self.cursor_hidden {
+            return;
+        }
+
         self.blink_cursor.update(cx, |cursor, cx| {
             cursor.pause(cx);
         });
