@@ -2085,6 +2085,71 @@ mod tests {
         (area, alpha, cx)
     }
 
+    /// A tab dragged from one dock area into another is refused.
+    ///
+    /// Two areas can be on screen at once — Claudhub's multiplexer paints one
+    /// per project — and a foreign panel used to be inserted into a tree that
+    /// has no view for it: the assertion in `views_of`, which fires during the
+    /// reconcile the insert triggers, so before anything is even painted.
+    ///
+    /// The target is the **tab group**, not the centre's root: an insert whose
+    /// node is not a group of tabs is a no-op for a reason of its own, and a
+    /// test aiming there would pass without proving anything. That is exactly
+    /// how this one first passed against the bug it was written for.
+    #[gpui::test]
+    fn a_panel_from_another_area_is_refused(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (mine, alpha, cx) = two_groups(&log, cx);
+        let theirs = cx.update(|window, cx| {
+            let area = cx.new(|cx| DockArea::new("other-dock", None, window, cx));
+            let beta = TestPanel::new("Beta", cx);
+            area.update(cx, |area, cx| {
+                area.set_center(DockLayout::tabs().panel(beta), window, cx);
+            });
+            area
+        });
+        let theirs_group = cx.read(|cx| {
+            let tree = theirs.read(cx).layout(DockPlacement::Center).unwrap();
+            tree.find_panel_node(tree.panels().next().unwrap()).unwrap()
+        });
+        let stranger = panel_id_of(&alpha);
+
+        cx.update(|window, cx| {
+            theirs.update(cx, |area, cx| {
+                area.move_panel(
+                    stranger,
+                    InsertTarget::Tabs {
+                        node: theirs_group,
+                        ix: None,
+                        activate: true,
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        assert!(
+            cx.read(|cx| theirs
+                .read(cx)
+                .layout(DockPlacement::Center)
+                .unwrap()
+                .find_panel_node(stranger)
+                .is_none()),
+            "the other area took in a panel it has no view for"
+        );
+        assert!(
+            cx.read(|cx| mine
+                .read(cx)
+                .layout(DockPlacement::Center)
+                .unwrap()
+                .find_panel_node(stranger)
+                .is_some()),
+            "the panel left the area that owns it"
+        );
+    }
+
     /// The id of the center split's `ix`-th child container.
     fn child_node(area: &Entity<DockArea>, ix: usize, cx: &mut VisualTestContext) -> NodeId {
         cx.read(|cx| {
