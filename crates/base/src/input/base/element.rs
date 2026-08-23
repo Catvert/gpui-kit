@@ -51,10 +51,13 @@ pub(super) const RIGHT_MARGIN: Pixels = px(10.);
 pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(10.);
 const FOLD_ICON_WIDTH: Pixels = px(14.);
 const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
-/// The column an application's gutter markers get, at the gutter's right edge.
-/// Wide enough to be clicked, narrow enough that the marker inside it can still
-/// sit flush against the text.
-const GUTTER_MARK_WIDTH: Pixels = px(10.);
+/// The strip an application's gutter markers get, at the gutter's right edge.
+///
+/// It is the margin that already separates the numbers from the text, and not a
+/// column of its own: reserving one would push the text ten pixels further from
+/// the numbers whether anything was ever marked or not, and the space is empty
+/// as it stands.
+const GUTTER_MARK_WIDTH: Pixels = LINE_NUMBER_RIGHT_MARGIN;
 const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
 const FOLD_CHEVRON_RIGHT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
 const FOLD_CHEVRON_DOWN_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>"#;
@@ -281,16 +284,6 @@ fn clamp_auto_grow_vertical_scroll_offset(
         scroll_top.clamp((input_height - scroll_height).min(px(0.)), px(0.))
     } else {
         scroll_top
-    }
-}
-
-/// The width the gutter gives an application's markers: a column, or nothing at
-/// all while no renderer is installed.
-fn gutter_mark_width<M: InputModeKind>(state: &InputBaseState<M>) -> Pixels {
-    if M::gutter_mark_renderer(state).is_some() {
-        GUTTER_MARK_WIDTH
-    } else {
-        px(0.)
     }
 }
 
@@ -1013,11 +1006,6 @@ impl<M: InputModeKind> TextElement<M> {
             line_number_width += FOLD_ICON_HITBOX_WIDTH
         }
 
-        // The application's markers take the outermost column, past the margin
-        // that separates the numbers from the text, so that what they paint can
-        // sit flush against the first character.
-        line_number_width += gutter_mark_width(state);
-
         (line_number_width, line_number_len)
     }
 
@@ -1227,12 +1215,8 @@ impl<M: InputModeKind> TextElement<M> {
 
         // Second pass: create and prepaint icons
         let line_height = last_layout.line_height;
-        // Back to the width of the numbers alone: the icons sit right after
-        // them, and everything past the margin belongs to someone else.
-        let line_number_width = last_layout.line_number_width
-            - LINE_NUMBER_RIGHT_MARGIN
-            - FOLD_ICON_HITBOX_WIDTH
-            - gutter_mark_width(self.state.read(cx));
+        let line_number_width =
+            last_layout.line_number_width - LINE_NUMBER_RIGHT_MARGIN - FOLD_ICON_HITBOX_WIDTH;
         let icon_relative_pos = point(
             (FOLD_ICON_HITBOX_WIDTH - FOLD_ICON_WIDTH).half(),
             (line_height - FOLD_ICON_WIDTH).half(),
@@ -1332,8 +1316,13 @@ impl<M: InputModeKind> TextElement<M> {
         let Some(render) = M::gutter_mark_renderer(self.state.read(cx)) else {
             return Vec::new();
         };
-        // The column is the outermost one: its right edge is the gutter's, so
-        // what an application paints there can touch the text.
+        // The strip's right edge is the gutter's, so what an application paints
+        // there can touch the text. A gutter with no room for it — no numbers,
+        // no folding — gets no markers rather than markers laid out to the left
+        // of where it starts.
+        if last_layout.line_number_width < GUTTER_MARK_WIDTH {
+            return Vec::new();
+        }
         let column_x = origin_x + last_layout.line_number_width - GUTTER_MARK_WIDTH;
         let line_height = last_layout.line_height;
         let mut offset_y = last_layout.visible_top;
