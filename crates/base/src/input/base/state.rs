@@ -5366,6 +5366,25 @@ impl InputBaseState<crate::input::EditorMode> {
         self.display_map.clear_folds();
         cx.notify();
     }
+
+    /// Puts an application's markers in the gutter, or takes them away.
+    ///
+    /// See [`crate::input::GutterMarkRenderer`]. Passing `None` gives the
+    /// column back to the text: the width is reserved only while a renderer is
+    /// installed.
+    pub fn set_gutter_marks(
+        &mut self,
+        renderer: Option<crate::input::GutterMarkRenderer>,
+        cx: &mut Context<Self>,
+    ) {
+        self.extras.gutter_marks = renderer;
+        cx.notify();
+    }
+
+    /// Whether a gutter-marker renderer is installed.
+    pub fn has_gutter_marks(&self) -> bool {
+        self.extras.gutter_marks.is_some()
+    }
 }
 
 /// Methods that only a source-code editor offers.

@@ -59,6 +59,20 @@ pub type InputHighlighterFactory = Rc<dyn Fn(&str) -> Option<Box<dyn InputHighli
 pub type SharedHighlightStyleResolver = Arc<dyn HighlightStyleResolver>;
 pub type FoldIconRenderer = Rc<dyn Fn(usize, bool) -> AnyElement>;
 
+/// Renders whatever an application wants to show in the gutter beside a line.
+///
+/// Called once per **buffer** line on screen and given that line's index; a
+/// `None` leaves the line unmarked. The elements are laid out in a narrow
+/// column at the right edge of the gutter, flush against the text, which is
+/// where an editor puts a version-control change strip — and the column is only
+/// reserved while a renderer is installed, so an editor with no use for one
+/// keeps the gutter it had.
+///
+/// This lives on the state and not on [`InputEditorStyle`] on purpose: the
+/// style is rebuilt from the theme on every render, so anything an application
+/// wrote there would be gone by the next frame.
+pub type GutterMarkRenderer = Rc<dyn Fn(usize) -> Option<AnyElement>>;
+
 #[derive(Clone, Copy, Default)]
 pub struct DiagnosticColors {
     pub error: Hsla,
