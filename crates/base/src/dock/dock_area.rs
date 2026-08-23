@@ -1585,6 +1585,16 @@ impl DockArea {
         cx: &mut App,
     ) -> Option<AnyElement> {
         let pane = self.docks.get(&placement)?;
+        // A region with nothing to draw draws nothing at all — frame, resize
+        // handle and reserved width included. Emptying a side region *is*
+        // closing it (see `alone` in `reconcile`), and a dock that kept its
+        // width around an empty group left a dead band down the side of the
+        // window: the panel had moved, and the place it left behind had not.
+        // Hiding the region's last visible panel says the same thing, which is
+        // the question `is_empty` answers.
+        if !self.is_node_visible(pane.tree.root(), cx) {
+            return None;
+        }
         let dock = self.dock_context(placement, &pane.dock);
 
         // A closed left or right dock takes no space at all; a closed bottom
@@ -2549,6 +2559,71 @@ mod tests {
         assert!(
             cx.read(|cx| centre.read(cx).context(cx).is_draggable()),
             "and the centre has the side dock"
+        );
+    }
+
+    /// Whether the left dock puts anything on screen this frame.
+    fn draws_left_dock(area: &Entity<DockArea>, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.render_dock(DockPlacement::Left, window, cx).is_some()
+            })
+        })
+    }
+
+    /// And the region it leaves behind stops being drawn.
+    ///
+    /// A dock keeps its size and its tree once emptied, so the frame went on
+    /// reserving the sidebar's width around a group with nothing in it: on the
+    /// search screen, dragging the results list beside the preview left a dead
+    /// band down the left of the window.
+    #[gpui::test]
+    fn a_side_dock_that_has_been_emptied_is_not_drawn(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, _centre, cx) = one_group(&log, &["Centre"], None, cx);
+        let side = cx.update(|window, cx| {
+            let side = TestPanel::logging("Side", &log, cx);
+            area.update(cx, |area, cx| {
+                area.set_dock(
+                    DockPlacement::Left,
+                    DockLayout::tabs().panel(side.clone()),
+                    window,
+                    cx,
+                );
+            });
+            side
+        });
+        cx.run_until_parked();
+        assert!(draws_left_dock(&area, cx), "a dock holding a panel draws");
+
+        let target = cx.read(|cx| {
+            first_tab_group(area.read(cx).layout(DockPlacement::Center).unwrap().root())
+                .expect("the centre holds a tab group")
+        });
+        let side_id = panel_id_of(&side);
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.move_panel(
+                    side_id,
+                    InsertTarget::Tabs {
+                        node: target,
+                        ix: None,
+                        activate: true,
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.run_until_parked();
+
+        assert!(
+            cx.read(|cx| area.read(cx).is_empty(DockPlacement::Left, cx)),
+            "the panel left the left dock"
+        );
+        assert!(
+            !draws_left_dock(&area, cx),
+            "and the emptied region reserves no width"
         );
     }
 
