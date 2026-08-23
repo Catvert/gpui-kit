@@ -31,6 +31,12 @@ impl InputModeKind for EditorMode {
         state.hover_definition_hitbox(window)
     }
 
+    fn gutter_mark_renderer(
+        state: &InputBaseState<Self>,
+    ) -> Option<crate::input::GutterMarkRenderer> {
+        state.extras.gutter_marks.clone()
+    }
+
     fn reset_language_features(state: &mut InputBaseState<Self>) {
         state.extras.lsp.reset();
     }

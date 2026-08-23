@@ -51,6 +51,10 @@ pub(super) const RIGHT_MARGIN: Pixels = px(10.);
 pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(6.);
 const FOLD_ICON_WIDTH: Pixels = px(14.);
 const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
+/// The column an application's gutter markers get, at the gutter's right edge.
+/// Wide enough to be clicked, narrow enough that the marker inside it can still
+/// sit flush against the text.
+const GUTTER_MARK_WIDTH: Pixels = px(10.);
 const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
 const MIN_LINE_NUMBER_DIGITS: usize = 3;
 const MAX_LINE_NUMBER_DIGITS: usize = 7;
@@ -301,6 +305,16 @@ fn clamp_auto_grow_vertical_scroll_offset(
         scroll_top.clamp((input_height - scroll_height).min(px(0.)), px(0.))
     } else {
         scroll_top
+    }
+}
+
+/// The width the gutter gives an application's markers: a column, or nothing at
+/// all while no renderer is installed.
+fn gutter_mark_width<M: InputModeKind>(state: &InputBaseState<M>) -> Pixels {
+    if M::gutter_mark_renderer(state).is_some() {
+        GUTTER_MARK_WIDTH
+    } else {
+        px(0.)
     }
 }
 
@@ -1135,6 +1149,11 @@ impl<M: InputModeKind> TextElement<M> {
             line_number_width += FOLD_ICON_HITBOX_WIDTH
         }
 
+        // The application's markers take the outermost column, past the margin
+        // that separates the numbers from the text, so that what they paint can
+        // sit flush against the first character.
+        line_number_width += gutter_mark_width(state);
+
         (line_number_width, line_number_len)
     }
 
@@ -1344,8 +1363,12 @@ impl<M: InputModeKind> TextElement<M> {
 
         // Second pass: create and prepaint icons
         let line_height = last_layout.line_height;
-        let line_number_width =
-            last_layout.line_number_width - LINE_NUMBER_RIGHT_MARGIN - FOLD_ICON_HITBOX_WIDTH;
+        // Back to the width of the numbers alone: the icons sit right after
+        // them, and everything past the margin belongs to someone else.
+        let line_number_width = last_layout.line_number_width
+            - LINE_NUMBER_RIGHT_MARGIN
+            - FOLD_ICON_HITBOX_WIDTH
+            - gutter_mark_width(self.state.read(cx));
         let icon_relative_pos = point(
             (FOLD_ICON_HITBOX_WIDTH - FOLD_ICON_WIDTH).half(),
             (line_height - FOLD_ICON_WIDTH).half(),
@@ -1424,6 +1447,54 @@ impl<M: InputModeKind> TextElement<M> {
         }
 
         icon_layout
+    }
+
+    /// Lay out the application's gutter markers, one per visible buffer line.
+    ///
+    /// The same walk the line numbers take, and it has to be: `offset_y` is
+    /// accumulated from each line's `wrapped_lines`, so a wrapped line pushes
+    /// its marker down by exactly what it pushes its number down by. Deriving
+    /// the position from the line index instead would drift the moment a line
+    /// wrapped or a fold closed — silently, and only on the files long enough
+    /// to do either.
+    fn layout_gutter_marks(
+        &self,
+        origin_x: Pixels,
+        bounds: &Bounds<Pixels>,
+        last_layout: &LastLayout,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<AnyElement> {
+        let Some(render) = M::gutter_mark_renderer(self.state.read(cx)) else {
+            return Vec::new();
+        };
+        // The column is the outermost one: its right edge is the gutter's, so
+        // what an application paints there can touch the text.
+        let column_x = origin_x + last_layout.line_number_width - GUTTER_MARK_WIDTH;
+        let line_height = last_layout.line_height;
+        let mut offset_y = last_layout.visible_top;
+        let mut marks = Vec::new();
+
+        for (line, &buffer_line) in last_layout
+            .lines
+            .iter()
+            .zip(last_layout.visible_buffer_lines.iter())
+        {
+            let height = line_height * line.wrapped_lines.len() as f32;
+            if let Some(mark) = render(buffer_line) {
+                let mut mark = mark;
+                mark.prepaint_as_root(
+                    point(column_x, bounds.origin.y + offset_y),
+                    size(GUTTER_MARK_WIDTH, height).into(),
+                    window,
+                    cx,
+                );
+                marks.push(mark);
+            }
+            offset_y += height;
+        }
+
+        marks
     }
 
     /// Paint fold icons using prepaint hitboxes.
@@ -2232,6 +2303,8 @@ pub(super) struct PrepaintState {
     bounds: Bounds<Pixels>,
     /// Fold icon layout data
     fold_icon_layout: FoldIconLayout,
+    /// The application's gutter markers, already prepainted in their column.
+    gutter_marks: Vec<AnyElement>,
     // Inline completion rendering data
     /// Shaped ghost lines to paint after cursor row (completion lines 2+)
     ghost_lines: Vec<ShapedLine>,
@@ -2875,6 +2948,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let fold_icon_layout =
             self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
         let hitbox = window.insert_hitbox(input_bounds, HitboxBehavior::Normal);
+        let gutter_marks = self.layout_gutter_marks(original_x, &bounds, &last_layout, window, cx);
 
         let token_elements = self.prepaint_tokens(&last_layout, bounds, token_elements, window, cx);
         PrepaintState {
@@ -2896,6 +2970,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             range_decoration_frames,
             indent_guides_path,
             fold_icon_layout,
+            gutter_marks,
             ghost_first_line,
             ghost_lines,
             ghost_lines_height,
@@ -3212,6 +3287,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     offset_y += prepaint.ghost_lines_height;
                 }
             }
+        }
+
+        // Paint the application's gutter markers. After the gutter background
+        // and before the fold icons, which are drawn on hover and would
+        // otherwise come out underneath their own column's neighbour.
+        for mark in prepaint.gutter_marks.iter_mut() {
+            mark.paint(window, cx);
         }
 
         // Paint fold icons (only visible on hover or for current line)
