@@ -1116,6 +1116,20 @@ impl PopupMenu {
         })
     }
 
+    /// An item's label, truncated rather than let out of the menu.
+    ///
+    /// The menu's box is capped (`max_width`), its rows are not: a label longer
+    /// than the cap kept its whole width — measured at eleven hundred pixels in
+    /// a two-hundred pixel box — and was painted straight through the border
+    /// and over whatever the popover sat on. Nothing wrapped it, either: a row
+    /// has the fixed height of one line.
+    ///
+    /// `flex_1` so the shortcut and the tick keep their place on the right, and
+    /// the ellipsis lands where the text runs out.
+    fn render_label(label: SharedString) -> impl IntoElement {
+        div().flex_1().truncate().child(label)
+    }
+
     fn render_icon(
         has_icon: bool,
         checked: bool,
@@ -1224,7 +1238,7 @@ impl PopupMenu {
                     .items_center()
                     .gap_x_1()
                     .children(Self::render_icon(has_left_icon, false, None, window, cx))
-                    .child(div().flex_1().child(label.clone())),
+                    .child(Self::render_label(label.clone())),
             ),
             PopupMenuItem::ElementItem {
                 render,
@@ -1287,7 +1301,9 @@ impl PopupMenu {
                         .gap_3()
                         .items_center()
                         .justify_between()
-                        .when(!show_link_icon, |this| this.child(label.clone()))
+                        .when(!show_link_icon, |this| {
+                            this.child(Self::render_label(label.clone()))
+                        })
                         .children(right_check_icon)
                         .when(show_link_icon, |this| {
                             this.child(
@@ -1295,7 +1311,7 @@ impl PopupMenu {
                                     .w_full()
                                     .justify_between()
                                     .gap_1p5()
-                                    .child(label.clone())
+                                    .child(Self::render_label(label.clone()))
                                     .child(
                                         Icon::new(IconName::ExternalLink)
                                             .xsmall()
@@ -1334,7 +1350,7 @@ impl PopupMenu {
                                 .gap_2()
                                 .items_center()
                                 .justify_between()
-                                .child(label.clone())
+                                .child(Self::render_label(label.clone()))
                                 .child(
                                     Icon::new(IconName::ChevronRight)
                                         .xsmall()
