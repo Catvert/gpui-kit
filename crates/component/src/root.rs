@@ -264,6 +264,19 @@ impl WindowState {
         cx.notify();
     }
 
+    /// Puts the focus back on the topmost dialog.
+    ///
+    /// A dialog is focused when it opens, but the focus may travel into one of
+    /// its fields afterwards; when that field goes away with its page — a
+    /// multi-page dialog swapping its content — the focus dies with it, and the
+    /// dialog's own key bindings (Enter, Escape, and every action a footer
+    /// button dispatches from the focused node) become unreachable.
+    pub fn focus_dialog(&mut self, window: &mut Window, cx: &mut Context<'_, WindowState>) {
+        if let Some(dialog) = self.active_dialogs.last() {
+            dialog.focus_handle.focus(window, cx);
+        }
+    }
+
     fn close_dialog_internal(&mut self) -> Option<FocusHandle> {
         self.focused_input = None;
         self.active_dialogs

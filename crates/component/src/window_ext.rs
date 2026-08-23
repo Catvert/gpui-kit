@@ -53,6 +53,10 @@ pub trait WindowExt: Sized {
     where
         F: Fn(AlertDialog, &mut Window, &mut App) -> AlertDialog + 'static;
 
+    /// Puts the focus back on the topmost dialog, so its key bindings and the
+    /// actions its buttons dispatch reach it again.
+    fn focus_dialog(&mut self, cx: &mut App);
+
     /// Return true, if there is an active Dialog.
     fn has_active_dialog(&mut self, cx: &mut App) -> bool;
 
@@ -137,6 +141,13 @@ impl WindowExt for Window {
     {
         self.open_dialog(cx, move |_, window, cx| {
             build(AlertDialog::new(cx), window, cx).build_surface(window, cx)
+        })
+    }
+
+    #[inline]
+    fn focus_dialog(&mut self, cx: &mut App) {
+        WindowState::update(self, cx, |root, window, cx| {
+            root.focus_dialog(window, cx);
         })
     }
 
