@@ -893,9 +893,27 @@ impl DockArea {
         // Planned first, applied second: the plan borrows the trees, and
         // applying it needs `&mut self` to fill the caches.
         let mut plans = Vec::new();
-        plan_tree(&self.center, false, self.locked, &mut plans);
+        // What "alone" guards is the dock being emptied, and the dock is the
+        // whole area — not one tree of it. Counted across the centre and every
+        // dock, so a lone panel in a side region can be dragged into the
+        // centre: that leaves its region empty, which is what closing a region
+        // *is*, and the area still has somewhere to drop it back.
+        let groups = tab_groups(&self.center)
+            + self
+                .docks
+                .values()
+                .map(|pane| tab_groups(&pane.tree))
+                .sum::<usize>();
+        let alone = groups <= 1;
+        plan_tree(&self.center, alone, false, self.locked, &mut plans);
         for pane in self.docks.values() {
-            plan_tree(&pane.tree, !pane.dock.is_open(), self.locked, &mut plans);
+            plan_tree(
+                &pane.tree,
+                alone,
+                !pane.dock.is_open(),
+                self.locked,
+                &mut plans,
+            );
         }
 
         // Sets rather than vectors: these are membership tests, run once per
@@ -1321,12 +1339,13 @@ impl DockArea {
                     .map(|(ix, (child, size))| {
                         resizable_panel()
                             .visible(shown[ix])
-                            .when(gap > px(0.) && Some(ix) != first_shown, |panel| {
-                                match axis {
+                            .when(
+                                gap > px(0.) && Some(ix) != first_shown,
+                                |panel| match axis {
                                     Axis::Horizontal => panel.pl(gap),
                                     Axis::Vertical => panel.pt(gap),
-                                }
-                            })
+                                },
+                            )
                             .child(self.render_node(child, window, cx))
                             // `flex_none` is what makes the size stick.
                             // `ResizablePanel` sets `flex_grow: 1` on itself,
@@ -1611,9 +1630,25 @@ fn sync_split_panels(
     );
 }
 
-fn plan_tree(tree: &PaneTree, collapsed: bool, locked: bool, out: &mut Vec<ContainerPlan>) {
-    // The root has nothing beside it by definition.
-    plan_node(tree.root(), true, collapsed, locked, out);
+/// How many tab groups a tree holds, however deeply split.
+fn tab_groups(tree: &PaneTree) -> usize {
+    fn walk(node: &PaneNode) -> usize {
+        match node.kind() {
+            PaneRef::Tabs { .. } => 1,
+            PaneRef::Split { children, .. } => children.iter().map(walk).sum(),
+        }
+    }
+    walk(tree.root())
+}
+
+fn plan_tree(
+    tree: &PaneTree,
+    alone: bool,
+    collapsed: bool,
+    locked: bool,
+    out: &mut Vec<ContainerPlan>,
+) {
+    plan_node(tree.root(), alone, collapsed, locked, out);
 }
 
 fn plan_node(
@@ -1635,9 +1670,11 @@ fn plan_node(
                 children: children.iter().map(PaneNode::id).collect(),
                 sizes: sizes.to_vec(),
             });
-            let children_alone = children.len() <= 1;
+            // Passed down unchanged: whether a group may be moved is a fact
+            // about the whole dock area, decided once by its caller, and not
+            // about how many siblings this particular split happens to hold.
             for child in children {
-                plan_node(child, children_alone, collapsed, locked, out);
+                plan_node(child, alone, collapsed, locked, out);
             }
         }
         PaneRef::Tabs { panels, active_ix } => out.push(ContainerPlan::Group {
@@ -2274,6 +2311,76 @@ mod tests {
 
     fn is_center_empty(area: &Entity<DockArea>, cx: &mut VisualTestContext) -> bool {
         cx.read(|cx| area.read(cx).is_empty(DockPlacement::Center, cx))
+    }
+
+    /// The first tab group of a region's tree. A bare `tabs()` layout is still
+    /// wrapped in a split of one, so the root itself is not the group.
+    fn root_group(
+        area: &Entity<DockArea>,
+        placement: DockPlacement,
+        cx: &mut VisualTestContext,
+    ) -> Entity<TabGroup> {
+        cx.read(|cx| {
+            let area = area.read(cx);
+            let tree = match placement {
+                DockPlacement::Center => &area.center,
+                other => &area.docks.get(&other).expect("no such dock").tree,
+            };
+            let node = first_tab_group(tree.root()).expect("the region holds no tab group");
+            area.groups
+                .get(&node)
+                .expect("no group there")
+                .entity
+                .clone()
+        })
+    }
+
+    /// A panel by itself in a side dock can still be dragged out.
+    ///
+    /// What "alone" guards is the dock being emptied, and the dock is the
+    /// whole area. Read per tree, it made the only panel of a side region
+    /// immovable — dragging it into the centre leaves that region empty, which
+    /// is what closing a region *is*, and Claudhub's search screen had its
+    /// results list pinned to the left with no way to put it beside the
+    /// preview.
+    #[gpui::test]
+    fn a_panel_alone_in_a_side_dock_can_still_be_moved(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, _centre, cx) = one_group(&log, &["Centre"], None, cx);
+        cx.update(|window, cx| {
+            let side = TestPanel::logging("Side", &log, cx);
+            area.update(cx, |area, cx| {
+                area.set_dock(
+                    DockPlacement::Left,
+                    DockLayout::tabs().panel(side),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        let side = root_group(&area, DockPlacement::Left, cx);
+        assert!(
+            cx.read(|cx| side.read(cx).context(cx).is_draggable()),
+            "it has the centre to go to"
+        );
+        let centre = root_group(&area, DockPlacement::Center, cx);
+        assert!(
+            cx.read(|cx| centre.read(cx).context(cx).is_draggable()),
+            "and the centre has the side dock"
+        );
+    }
+
+    /// The other half of the same rule: with one group in the whole area, its
+    /// panel has nowhere to be dropped back and stays put.
+    #[gpui::test]
+    fn the_areas_very_last_panel_stays_put(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, _only, cx) = one_group(&log, &["Only"], None, cx);
+        let group = root_group(&area, DockPlacement::Center, cx);
+        assert!(!cx.read(|cx| group.read(cx).context(cx).is_draggable()));
+        assert!(!cx.read(|cx| group.read(cx).context(cx).can_close()));
     }
 
     #[gpui::test]
