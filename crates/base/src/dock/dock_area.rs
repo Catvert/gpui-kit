@@ -2627,6 +2627,165 @@ mod tests {
         );
     }
 
+    /// Dragging the divider between two centre groups resizes them.
+    ///
+    /// The scenario is a panel dropped beside the centre — a terminal to the
+    /// right of a diff: one split in the centre, and the mouse on the handle
+    /// between the two groups.
+    #[gpui::test]
+    fn dragging_the_centre_divider_resizes_the_groups(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton, point};
+
+        /// The frames the real skin gives the area, sized like
+        /// `gpui-component`'s `DockSkin`: the bare defaults carry no size at
+        /// all, and a frame chain with an indefinite height collapses the
+        /// handles to nothing — which is not the case under test.
+        struct SkinLike;
+        impl DockAreaRenderer for SkinLike {
+            fn frame(&self, _: &mut Window, _: &mut App) -> Stateful<Div> {
+                div()
+                    .id("dock-area")
+                    .relative()
+                    .size_full()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_row()
+            }
+            fn center_frame(&self, _: &mut Window, _: &mut App) -> Stateful<Div> {
+                div()
+                    .id("dock-area-center")
+                    .flex()
+                    .flex_1()
+                    .flex_col()
+                    .overflow_hidden()
+            }
+            fn split_frame(
+                &self,
+                node: NodeId,
+                _: Axis,
+                _: &mut Window,
+                _: &mut App,
+            ) -> Stateful<Div> {
+                div()
+                    .id(("dock-split-frame", node.as_u64()))
+                    .size_full()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_hidden()
+            }
+            // Claudhub's variant is Segmented, whose gap is four pixels taken
+            // as padding inside every slot but the first — the handle then
+            // sits in that gap.
+            fn split_gap(&self, _: &App) -> Pixels {
+                px(4.)
+            }
+            fn tab_group_renderer(&self) -> Rc<dyn TabGroupRenderer> {
+                Rc::new(BareTabGroup)
+            }
+            fn tiles_renderer(&self) -> Rc<dyn TilesRenderer> {
+                Rc::new(BareTiles)
+            }
+        }
+
+        cx.update(|cx| {
+            let _ = crate::Theme::global_mut(cx);
+        });
+        let log = Log::default();
+        let (area, cx) = cx.add_window_view(|window, cx| {
+            DockArea::new("test-dock", None, window, cx).with_renderer(Rc::new(SkinLike))
+        });
+        cx.update(|window, cx| {
+            let alpha = TestPanel::logging("Alpha", &log, cx);
+            let beta = TestPanel::logging("Beta", &log, cx);
+            area.update(cx, |area, cx| {
+                // Sized slots, as a layout read back from disk leaves them:
+                // both carry a preference, so neither is the unconstrained
+                // slot the leftover would go to.
+                area.set_center(
+                    DockLayout::h_split()
+                        .child(DockLayout::tabs().panel(alpha), Some(px(1200.)))
+                        .child(DockLayout::tabs().panel(beta), Some(px(720.))),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let root = cx.read(|cx| {
+            area.read(cx)
+                .layout(DockPlacement::Center)
+                .unwrap()
+                .root()
+                .id()
+        });
+        let state = cx.read(|cx| area.read(cx).splits.get(&root).unwrap().entity.clone());
+        let before = state.read_with(cx, |state, _| state.sizes().clone());
+        let boundary = before[0];
+
+        cx.simulate_mouse_down(
+            point(boundary - px(2.), px(50.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(boundary + px(10.), px(50.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(boundary + px(40.), px(50.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(boundary + px(40.), px(50.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+
+        let after = state.read_with(cx, |state, _| state.sizes().clone());
+        assert!(
+            after[0] > before[0] + px(30.),
+            "the divider did not move: {before:?} -> {after:?}"
+        );
+
+        // A second drag, back towards the left, after the first one's result
+        // has been written into the tree and reconciled: the write-back path
+        // must not pin the divider where the first drag left it.
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let before = after;
+        let boundary = before[0];
+        cx.simulate_mouse_down(
+            point(boundary - px(2.), px(50.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(boundary - px(10.), px(50.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(boundary - px(200.), px(50.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(boundary - px(200.), px(50.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        let after = state.read_with(cx, |state, _| state.sizes().clone());
+        assert!(
+            after[0] < before[0] - px(150.),
+            "the second drag did not move the divider back: {before:?} -> {after:?}"
+        );
+    }
+
     /// The other half of the same rule: with one group in the whole area, its
     /// panel has nowhere to be dropped back and stays put.
     #[gpui::test]

@@ -156,6 +156,82 @@ impl DockSkin {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::{cell::Cell, rc::Rc};
+
+    use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
+    use gpui_base::dock::{DockArea, DockLayout, DockPlacement};
+
+    use crate::dock::{DockSkin, test_support::MeasuredProbe};
+
+    /// Dragging the divider between the centre and a right dock resizes it.
+    ///
+    /// The handle is the skin's — `render_resize_handle` plus the window-level
+    /// tracker — so only a windowed test with real mouse events exercises it.
+    #[gpui::test]
+    fn dragging_the_right_docks_handle_resizes_it(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::init(cx);
+        });
+        let (area, cx) = cx.add_window_view(|window, cx| {
+            let skin = DockSkin::new(cx);
+            DockArea::new("skin", None, window, cx).with_renderer(skin)
+        });
+        cx.update(|window, cx| {
+            let centre = MeasuredProbe::new(Rc::new(Cell::new(px(0.))), cx);
+            let right = MeasuredProbe::new(Rc::new(Cell::new(px(0.))), cx);
+            area.update(cx, |area, cx| {
+                area.set_center(DockLayout::tabs().panel(centre), window, cx);
+                area.set_dock(
+                    DockPlacement::Right,
+                    DockLayout::tabs().panel(right),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let before = cx.read(|cx| {
+            area.read(cx)
+                .dock_size(DockPlacement::Right)
+                .expect("the right dock has a size")
+        });
+        let width = cx.update(|window, _| window.viewport_size().width);
+        let boundary = width - before;
+
+        cx.simulate_mouse_down(
+            point(boundary + px(2.), px(300.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(boundary - px(10.), px(300.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(boundary - px(100.), px(300.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(boundary - px(100.), px(300.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+
+        let after = cx.read(|cx| area.read(cx).dock_size(DockPlacement::Right).unwrap());
+        assert!(
+            after > before + px(80.),
+            "the dock divider did not move: {before:?} -> {after:?}"
+        );
+    }
+}
+
 /// Turns the window's mouse stream into dock resizing.
 ///
 /// A resize is driven by pointer moves that land anywhere in the window, not

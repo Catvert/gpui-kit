@@ -1480,6 +1480,14 @@ impl Element for Scrollbar {
                     let painted_thumb_bg = state.thumb_bg.clone().opacity(visibility_opacity);
 
                     window.set_cursor_style(CursorStyle::default(), &state.bar_hitbox);
+                    // For the mouse listeners below: the bar's bounds say where
+                    // the bar is, the hitbox says whether the bar is what the
+                    // pointer is on. The two differ under anything painted over
+                    // the bar with `occlude()` — a dock's resize handle
+                    // overlaps the last few pixels of the track — and a raw
+                    // `bounds.contains` there stole the press: the divider
+                    // never moved, the content jumped instead.
+                    let bar_hitbox = state.bar_hitbox.clone();
 
                     window.paint_layer(hitbox_bounds, |cx| {
                         cx.paint_quad(fill(painted_bounds, painted_track_bg));
@@ -1535,9 +1543,13 @@ impl Element for Scrollbar {
                         window.on_mouse_event({
                             let state = scrollbar_state.clone();
                             let scroll_handle = self.scroll_handle.clone();
+                            let bar_hitbox = bar_hitbox.clone();
 
-                            move |event: &MouseDownEvent, phase, _, cx| {
-                                if phase.bubble() && bounds.contains(&event.position) {
+                            move |event: &MouseDownEvent, phase, window, cx| {
+                                if phase.bubble()
+                                    && bounds.contains(&event.position)
+                                    && bar_hitbox.is_hovered(window)
+                                {
                                     cx.stop_propagation();
 
                                     if thumb_bounds.contains(&event.position) {
@@ -1585,13 +1597,19 @@ impl Element for Scrollbar {
                         let state = scrollbar_state.clone();
                         let max_fps_duration = Duration::from_millis((1000 / self.max_fps) as u64);
 
-                        move |event: &MouseMoveEvent, _, _, cx| {
+                        move |event: &MouseMoveEvent, _, window, cx| {
                             let mut notify = false;
                             // When is hover to show mode or it was visible,
                             // we need to update the hovered state and increase the last_scroll_time.
                             let need_hover_to_update = is_hover_to_show || is_visible;
-                            // Update hovered state for scrollbar
-                            if bounds.contains(&event.position) && need_hover_to_update {
+                            // Update hovered state for scrollbar. Through the
+                            // hitbox, not the bounds: a bar lighting up under
+                            // an occluding handle invites the very press the
+                            // mouse-down listener now refuses.
+                            if bounds.contains(&event.position)
+                                && bar_hitbox.is_hovered(window)
+                                && need_hover_to_update
+                            {
                                 let hover_changed = state.get().hovered_axis != Some(axis);
                                 state.set(state.get().with_hovered(Some(axis), Instant::now()));
                                 notify |= hover_changed;
@@ -2300,6 +2318,58 @@ mod tests {
         cx.simulate_click(point(px(80.), px(95.)), Modifiers::default());
         assert!(horizontal.offset().x < px(0.));
         assert_eq!(horizontal.offset().y, px(0.));
+    }
+
+    /// A press on the track under an occluding element is not a track click.
+    ///
+    /// The listener is window-level — no hitbox gates it by itself — and it
+    /// used to test the raw bounds. A dock's resize handle overlaps the last
+    /// pixels of a panel's scrollbar, and grabbing the divider there scrolled
+    /// the panel instead of moving the divider: the press was consumed, and
+    /// the handle underneath never saw it.
+    struct OccludedHarness {
+        handle: TestHandle,
+    }
+
+    impl Render for OccludedHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use gpui::InteractiveElement as _;
+            div()
+                .relative()
+                .size(px(100.))
+                .child(
+                    Scrollbar::new(&self.handle)
+                        .axis(ScrollbarAxis::Vertical)
+                        .mode(ScrollbarMode::Always),
+                )
+                // What a dock's divider does: an occluding strip over the
+                // track's last pixels, painted after the bar.
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .h_full()
+                        .w(px(10.))
+                        .occlude(),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn a_press_under_an_occluding_element_is_not_a_track_click(cx: &mut TestAppContext) {
+        let handle = TestHandle::new(size(px(100.), px(500.)));
+        let (_, cx) = cx.add_window_view({
+            let handle = handle.clone();
+            move |_, _| OccludedHarness { handle }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // The same press `vertical_track_click_updates_vertical_offset` makes,
+        // with the strip in front: the offset must not move.
+        cx.simulate_click(point(px(95.), px(80.)), Modifiers::default());
+        assert_eq!(handle.offset().y, px(0.));
+        assert_eq!(handle.drag_starts.get(), 0);
     }
 
     #[gpui::test]
