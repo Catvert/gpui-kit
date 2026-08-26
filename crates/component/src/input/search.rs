@@ -63,6 +63,10 @@ pub(super) struct SearchPanel<M: crate::input::overlay::OverlayMode> {
     search_input: Entity<InputState>,
     replace_input: Entity<InputState>,
     session: gpui_base::input::SearchSession,
+    /// Whether the user has set case sensitivity by hand, through the toggle.
+    /// Until then it is derived from the query (smart case): an all-lowercase
+    /// query ignores case, one carrying a capital respects it.
+    case_chosen: bool,
     input_width: Pixels,
 
     _subscriptions: Vec<Subscription>,
@@ -105,6 +109,7 @@ impl<M: crate::input::overlay::OverlayMode> SearchPanel<M> {
                 search_input,
                 replace_input,
                 session: gpui_base::input::SearchSession::default(),
+                case_chosen: false,
                 input_width: Pixels::ZERO,
                 _subscriptions,
             }
@@ -151,6 +156,11 @@ impl<M: crate::input::overlay::OverlayMode> SearchPanel<M> {
         cx: &mut Context<Self>,
     ) {
         let query = self.search_input.read(cx).value();
+        // Smart case while the toggle has not been touched: the query itself
+        // says whether case matters, as it does in every editor's search.
+        if !self.case_chosen {
+            self.session.case_insensitive = !query.chars().any(|c| c.is_uppercase());
+        }
         let editor = self.editor.clone();
         let _ = editor.update(cx, |state, cx| {
             state.set_search_query(query.clone(), self.session.case_insensitive, cx);
@@ -357,6 +367,7 @@ impl<M: crate::input::overlay::OverlayMode> Render for SearchPanel<M> {
                                             .text()
                                             .icon(IconName::CaseSensitive)
                                             .on_click(cx.listener(|this, _, _, cx| {
+                                                this.case_chosen = true;
                                                 this.session.case_insensitive =
                                                     !this.session.case_insensitive;
                                                 this.update_search_query(None, cx);
