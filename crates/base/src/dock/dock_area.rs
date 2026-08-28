@@ -1015,10 +1015,18 @@ impl DockArea {
                 .map(|pane| tab_groups(&pane.tree))
                 .sum::<usize>();
         let alone = groups <= 1;
-        plan_tree(&self.center, alone, false, self.locked, &mut plans);
-        for pane in self.docks.values() {
+        plan_tree(
+            &self.center,
+            DockPlacement::Center,
+            alone,
+            false,
+            self.locked,
+            &mut plans,
+        );
+        for (placement, pane) in self.docks.iter() {
             plan_tree(
                 &pane.tree,
+                *placement,
                 alone,
                 !pane.dock.is_open(),
                 self.locked,
@@ -1811,16 +1819,18 @@ fn tab_groups(tree: &PaneTree) -> usize {
 
 fn plan_tree(
     tree: &PaneTree,
+    placement: DockPlacement,
     alone: bool,
     collapsed: bool,
     locked: bool,
     out: &mut Vec<ContainerPlan>,
 ) {
-    plan_node(tree.root(), alone, collapsed, locked, out);
+    plan_node(tree.root(), placement, alone, collapsed, locked, out);
 }
 
 fn plan_node(
     node: &PaneNode,
+    placement: DockPlacement,
     alone: bool,
     collapsed: bool,
     locked: bool,
@@ -1842,7 +1852,7 @@ fn plan_node(
             // about the whole dock area, decided once by its caller, and not
             // about how many siblings this particular split happens to hold.
             for child in children {
-                plan_node(child, alone, collapsed, locked, out);
+                plan_node(child, placement, alone, collapsed, locked, out);
             }
         }
         PaneRef::Tabs { panels, active_ix } => out.push(ContainerPlan::Group {
@@ -1851,7 +1861,11 @@ fn plan_node(
             active_ix,
             constraints: TabGroupConstraints::in_split(alone)
                 .dock_locked(locked)
-                .collapsed(collapsed),
+                .collapsed(collapsed)
+                // The region travels with the rest of what a container decides
+                // about a group: a skin cannot work it out — the trees are
+                // ours — and the chrome an edge wants is not the centre's.
+                .placement(placement),
         }),
         PaneRef::Tiles { panels } => out.push(ContainerPlan::Tiles {
             node: node.id(),
@@ -4322,6 +4336,35 @@ mod tests {
             "the survivors kept their own proportions: slot 0 was removed, not \
              the tail — got {after:?} from {before:?}"
         );
+    }
+
+    /// A group carries the region it sits in, so a skin can give an edge a
+    /// different chrome from the centre's — which is what an application whose
+    /// side zones are chosen from a rail of its own needs.
+    #[gpui::test]
+    fn a_group_says_which_region_it_sits_in(cx: &mut TestAppContext) {
+        let log = log_of();
+        let (area, _alpha, cx) = one_group(&log, &["Alpha"], None, cx);
+        cx.update(|window, cx| {
+            let beta = TestPanel::logging("Beta", &log, cx);
+            area.update(cx, |area, cx| {
+                area.set_dock(
+                    DockPlacement::Left,
+                    DockLayout::tabs().panel(beta),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        for placement in [DockPlacement::Center, DockPlacement::Left] {
+            let group = root_group(&area, placement, cx);
+            assert_eq!(
+                cx.read(|cx| group.read(cx).context(cx).placement()),
+                placement
+            );
+        }
     }
 
     #[gpui::test]

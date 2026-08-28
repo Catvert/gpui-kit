@@ -721,10 +721,25 @@ impl TabGroupRenderer for TabGroupSkin {
             .map(|(ix, _)| ix)
             .collect();
 
+        // The region's style, not the area's: an edge chosen from a rail of
+        // the application's own has no use for a strip of tabs repeating it.
+        let style = self.shared.panel_style_at(group.placement());
         match visible.as_slice() {
             [] => Empty.into_any_element(),
-            [ix] if self.shared.panel_style() == PanelStyle::Auto => {
-                self.render_title(group, *ix, window, cx)
+            [ix] if style == PanelStyle::Auto => self.render_title(group, *ix, window, cx),
+            // The displayed tab, and the first visible one when that tab has
+            // gone invisible under it — a title naming a panel nobody can see
+            // would be worse than none.
+            _ if style == PanelStyle::Title => {
+                let ix = visible
+                    .iter()
+                    .copied()
+                    .find(|ix| *ix == group.active_ix())
+                    .or_else(|| visible.first().copied());
+                match ix {
+                    Some(ix) => self.render_title(group, ix, window, cx),
+                    None => Empty.into_any_element(),
+                }
             }
             _ => self.render_tabs(group, window, cx),
         }

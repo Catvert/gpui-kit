@@ -18,6 +18,7 @@ use super::{
     },
     layout::{InsertTarget, NodeId, PanelId},
     panel::PanelView,
+    state::DockPlacement,
 };
 
 /// Behavior a tab group cannot carry out on its own.
@@ -64,6 +65,7 @@ pub struct TabGroupConstraints {
     dock_locked: bool,
     collapsed: bool,
     closable: bool,
+    placement: DockPlacement,
 }
 
 impl TabGroupConstraints {
@@ -75,6 +77,7 @@ impl TabGroupConstraints {
             dock_locked: true,
             collapsed: false,
             closable: false,
+            placement: DockPlacement::Center,
         }
     }
 
@@ -87,6 +90,7 @@ impl TabGroupConstraints {
             dock_locked: false,
             collapsed: false,
             closable: true,
+            placement: DockPlacement::Center,
         }
     }
 
@@ -107,6 +111,23 @@ impl TabGroupConstraints {
     pub fn closable(mut self, closable: bool) -> Self {
         self.closable = closable;
         self
+    }
+
+    /// The region this group sits in.
+    ///
+    /// A fact about the container and not about the group, which is why it
+    /// arrives with the rest of them: a skin cannot work it out on its own —
+    /// the trees are the area's — and the chrome an edge wants is not the
+    /// chrome the centre wants. An application whose side zones are chosen
+    /// from a rail of its own has no use for a strip of tabs repeating it.
+    pub fn placement(mut self, placement: DockPlacement) -> Self {
+        self.placement = placement;
+        self
+    }
+
+    /// The region this group sits in — see [`Self::placement`].
+    pub fn region(&self) -> DockPlacement {
+        self.placement
     }
 
     /// Whether nothing sits beside this group in its tree.
@@ -274,6 +295,7 @@ impl TabGroup {
 
         TabGroupContext {
             node: self.node,
+            placement: self.constraints.region(),
             panels: self.panels.clone(),
             active_panel: self.active_panel(cx),
             active_ix: self.active_ix,
@@ -775,6 +797,7 @@ type DropItemHandler = Rc<dyn Fn(AnyDrag, Option<Placement>, &mut Window, &mut A
 #[derive(Clone)]
 pub struct TabGroupContext {
     node: NodeId,
+    placement: DockPlacement,
     panels: Vec<Arc<dyn PanelView>>,
     active_panel: Option<Arc<dyn PanelView>>,
     active_ix: usize,
@@ -797,6 +820,11 @@ impl TabGroupContext {
     /// group in a drag payload or a drop target.
     pub fn node(&self) -> NodeId {
         self.node
+    }
+
+    /// The region this group sits in, for a skin whose chrome differs by edge.
+    pub fn placement(&self) -> DockPlacement {
+        self.placement
     }
 
     /// Every panel in the group, in tab order — visible or not. A skin filters
