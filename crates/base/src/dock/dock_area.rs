@@ -2611,7 +2611,7 @@ mod tests {
         let (area, _only, cx) = one_group(&log, &["Only"], None, cx);
         let group = root_group(&area, DockPlacement::Center, cx);
         assert!(!cx.read(|cx| group.read(cx).context(cx).is_draggable()));
-        assert!(!cx.read(|cx| group.read(cx).context(cx).can_close()));
+        assert!(!cx.read(|cx| group.read(cx).context(cx).is_closable()));
     }
 
     #[gpui::test]
