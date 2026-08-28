@@ -22,7 +22,7 @@ mod tab_panel;
 #[cfg(test)]
 mod test_support;
 
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, cell::RefCell, collections::HashMap, rc::Rc};
 
 use gpui::{App, AppContext as _, Context, Entity, SharedString, WeakEntity, Window, actions};
 
@@ -80,6 +80,8 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) struct SkinShared {
     area: WeakEntity<DockArea>,
     panel_style: Cell<PanelStyle>,
+    /// The style of one region, where it differs from the one above.
+    panel_style_at: RefCell<HashMap<DockPlacement, PanelStyle>>,
     tab_variant: Cell<TabVariant>,
     toggle_button_visible: Cell<bool>,
     close_button_visible: Cell<bool>,
@@ -94,6 +96,15 @@ impl SkinShared {
 
     pub(crate) fn panel_style(&self) -> PanelStyle {
         self.panel_style.get()
+    }
+
+    /// The style of the region a group sits in, falling back to the area's.
+    pub(crate) fn panel_style_at(&self, placement: DockPlacement) -> PanelStyle {
+        self.panel_style_at
+            .borrow()
+            .get(&placement)
+            .copied()
+            .unwrap_or_else(|| self.panel_style.get())
     }
 
     pub(crate) fn tab_variant(&self) -> TabVariant {
@@ -162,6 +173,7 @@ impl DockSkin {
                 area: cx.weak_entity(),
                 panel_style: Cell::new(PanelStyle::default()),
                 tab_variant: Cell::new(TabVariant::default()),
+                panel_style_at: RefCell::default(),
                 toggle_button_visible: Cell::new(true),
                 close_button_visible: Cell::new(false),
                 resizing_dock: Cell::new(None),
@@ -180,6 +192,21 @@ impl DockSkin {
 
     pub fn set_panel_style(&self, style: PanelStyle, cx: &mut App) {
         self.shared.panel_style.set(style);
+        self.shared.notify(cx);
+    }
+
+    /// The same, for one region only.
+    ///
+    /// The chrome an edge wants is not the chrome the centre wants: an
+    /// application that picks its side zones from a rail of its own has no use
+    /// for a strip of tabs repeating it, while the centre — where documents are
+    /// chosen by their tabs and nowhere else — does. A region nothing is set
+    /// for follows [`Self::set_panel_style`].
+    pub fn set_panel_style_at(&self, placement: DockPlacement, style: PanelStyle, cx: &mut App) {
+        self.shared
+            .panel_style_at
+            .borrow_mut()
+            .insert(placement, style);
         self.shared.notify(cx);
     }
 

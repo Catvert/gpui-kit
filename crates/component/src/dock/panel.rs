@@ -34,6 +34,14 @@ pub enum PanelStyle {
     Auto,
     /// Always display the tab bar.
     TabBar,
+    /// Always display the active panel's title, however many tabs there are.
+    ///
+    /// For a region an application selects from somewhere else — a rail of
+    /// buttons along the window's edge, say. A strip of tabs there says a
+    /// second time what the rail already says, and the two disagree the moment
+    /// one of them is scrolled or truncated. The title stays a drag source, so
+    /// a panel can still be taken out of the region by hand.
+    Title,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
