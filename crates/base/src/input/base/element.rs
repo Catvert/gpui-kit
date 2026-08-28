@@ -853,7 +853,6 @@ impl<M: InputModeKind> TextElement<M> {
         &self,
         last_layout: &LastLayout,
         bounds: &mut Bounds<Pixels>,
-        window: &mut Window,
         cx: &mut App,
     ) -> Option<Path<Pixels>> {
         let state = self.state.read(cx);
@@ -2080,7 +2079,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         last_layout.cursor_bounds = cursor_bounds;
 
         let search_match_paths = self.layout_search_matches(&last_layout, &mut bounds, cx);
-        let selection_path = self.layout_selections(&last_layout, &mut bounds, window, cx);
+        let selection_path = self.layout_selections(&last_layout, &mut bounds, cx);
         let hover_highlight_path = self.layout_hover_highlight(&last_layout, &mut bounds, cx);
         let document_color_paths =
             self.layout_document_colors(&document_colors, &last_layout, &bounds, cx);
