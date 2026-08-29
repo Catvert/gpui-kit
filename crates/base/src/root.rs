@@ -191,7 +191,28 @@ impl Root {
             .expect("window must have a Base Root");
         root.update(cx, |root, cx| f(root, window, cx))
     }
+    /// Whether Tab is the window's to move the focus with.
+    ///
+    /// **It is not, unless something is holding the keyboard hostage.** Tab
+    /// belongs to whatever has the focus — a terminal sends it to the program
+    /// running there, an editor indents with it — and a root binding outranked
+    /// nothing but still fired first, so a Shift+Tab typed into a terminal
+    /// teleported the focus out of it instead of reaching the shell.
+    ///
+    /// A dialog, a sheet or any other focus trap is the case this navigation
+    /// exists for: a handful of fields, one modal surface, and no other way
+    /// round it from the keyboard. Dialogs and sheets register their trap
+    /// here in Base, whichever layer styles them. Everywhere else the key is
+    /// the focused view's.
+    fn tab_navigates(window: &Window, cx: &App) -> bool {
+        crate::active_focus_trap(window, cx).is_some()
+    }
+
     fn on_action_tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
+        if !Self::tab_navigates(window, cx) {
+            cx.propagate();
+            return;
+        }
         // Check if we're inside a focus trap
         if let Some(container_focus_handle) = crate::active_focus_trap(window, cx) {
             // We're in a focus trap - try to focus next, then check if we're still inside
@@ -227,6 +248,10 @@ impl Root {
     }
 
     fn on_action_tab_prev(&mut self, _: &TabPrev, window: &mut Window, cx: &mut Context<Self>) {
+        if !Self::tab_navigates(window, cx) {
+            cx.propagate();
+            return;
+        }
         // Check if we're inside a focus trap
         if let Some(container_focus_handle) = crate::active_focus_trap(window, cx) {
             // We're in a focus trap - try to focus previous, then check if we're still inside
