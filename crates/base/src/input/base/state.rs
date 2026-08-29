@@ -9908,6 +9908,39 @@ mod tests {
         });
         assert_ne!(input.read_with(&cx, |state, _| state.paste_target()), moved);
     }
+
+    /// An editor says how many rows its text takes, which is what an
+    /// application growing a field with its content has to ask.
+    ///
+    /// `scroll_size` cannot answer it: it is floored at the height already on
+    /// screen, so a field that grew once would never shrink back. An empty
+    /// field is one row, not none.
+    #[gpui::test]
+    fn test_wrapped_row_count_follows_the_text(cx: &mut TestAppContext) {
+        let editor = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(editor.window_handle.into(), cx);
+        VisualTestContext::update(&mut cx, |window, cx| window.draw(cx).clear(cx));
+
+        editor
+            .input
+            .read_with(&mut cx, |state, _| assert_eq!(state.wrapped_row_count(), 1));
+
+        editor.input.update_in(&mut cx, |state, window, cx| {
+            state.set_value("one\ntwo\nthree", window, cx)
+        });
+        VisualTestContext::update(&mut cx, |window, cx| window.draw(cx).clear(cx));
+        editor
+            .input
+            .read_with(&mut cx, |state, _| assert_eq!(state.wrapped_row_count(), 3));
+
+        editor.input.update_in(&mut cx, |state, window, cx| {
+            state.set_value("one", window, cx)
+        });
+        VisualTestContext::update(&mut cx, |window, cx| window.draw(cx).clear(cx));
+        editor
+            .input
+            .read_with(&mut cx, |state, _| assert_eq!(state.wrapped_row_count(), 1));
+    }
 }
 
 /// Methods that only a single-line input offers.
@@ -10109,6 +10142,20 @@ impl<M: crate::input::MultiLineMode> InputBaseState<M> {
         self.wrapping_indent = wrapping_indent;
         self.display_map.set_wrapping_indent(wrapping_indent, cx);
         cx.notify();
+    }
+
+    /// How many rows the text currently occupies on screen, soft wrap included.
+    ///
+    /// The number [`Self::auto_grow`] grows by, offered to applications that
+    /// cannot use it: the layout mode is auto-grow *or* code editor, so an
+    /// editor asked to follow its content has no way of asking how tall that
+    /// content is. [`Self::scroll_size`] does not answer it — it is floored at
+    /// the height already on screen, so a field that grew once could never
+    /// shrink back.
+    ///
+    /// Zero rows is reported as one: an empty field is a line high.
+    pub fn wrapped_row_count(&self) -> usize {
+        self.display_map.wrap_row_count().max(1)
     }
 }
 
