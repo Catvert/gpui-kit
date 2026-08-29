@@ -475,6 +475,14 @@ impl TabGroupSkin {
             // The bar passes the variant on to every tab it renders.
             .with_variant(variant)
             .track_scroll(&self.scroll_handle)
+            // **A bar with no prefix keeps the prefix's inset.** The leading
+            // buttons pad themselves by two, and every tab after the first is
+            // set in by the one before it — so the first tab was the only thing
+            // in the window touching the edge of its own card, and it read as a
+            // misalignment rather than as a tab. An application that hides the
+            // dock's toggles has no leading anything, which is exactly when it
+            // showed.
+            .when(!has_leading, |this| this.pl_2())
             .when(has_leading, |this| {
                 this.prefix(
                     h_flex()
