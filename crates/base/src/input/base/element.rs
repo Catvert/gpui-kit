@@ -588,6 +588,12 @@ impl<M: InputModeKind> TextElement<M> {
             // it stands in for a modal editor's block where there is no
             // character to paint one over. The advance is the font's own, read
             // from the style the editor was laid out under.
+            //
+            // A **digit's** advance and not an `em`'s, which is the `m`'s: in a
+            // monospace font the two are the same cell, and in a proportional
+            // one the `m` is the widest letter there is — a block as wide as it
+            // is tall, sitting on an empty line, which reads as a white square
+            // rather than as a cursor.
             let block = state.caret_block.is_some();
             let cursor_height = if block {
                 line_height
@@ -600,7 +606,7 @@ impl<M: InputModeKind> TextElement<M> {
                 let font = window.text_system().resolve_font(&style.font());
                 window
                     .text_system()
-                    .em_advance(font, font_size)
+                    .ch_advance(font, font_size)
                     .unwrap_or(CURSOR_WIDTH)
             } else {
                 CURSOR_WIDTH
