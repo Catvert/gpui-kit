@@ -673,6 +673,18 @@ impl TabGroupSkin {
                         })
                     }),
             )
+            // After the last tab, and not among the controls at the far end:
+            // "one more of these" reads as the next tab. A collapsed group is
+            // a strip one clicks to open, so it carries no control at all.
+            .when(!collapsed, |this| {
+                this.when_some(
+                    group
+                        .active_panel()
+                        .and_then(PanelHandle::of)
+                        .and_then(|handle| handle.tab_bar_trailing(window, cx)),
+                    |this, trailing| this.trailing(trailing),
+                )
+            })
             .when(!collapsed, |this| {
                 this.suffix(
                     h_flex()
