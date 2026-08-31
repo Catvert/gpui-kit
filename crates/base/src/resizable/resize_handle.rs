@@ -96,10 +96,11 @@ impl ResizeHandleState {
 ///
 /// A handle named no edge straddles the boundary it resizes, half its band on
 /// either side, which is what a divider between two panels of a group wants.
-/// A dock's own edge handle cannot: [`dock_frame`] clips to the dock's box, so
-/// the half hanging outside is cut away -- what it paints and what it
-/// hit-tests alike, which is why the outer half of a dock's grab band has
-/// never actually been grabbable. Naming the edge moves the whole band inside.
+/// A dock's own edge handle cannot: the half hanging outside would land on
+/// the neighbour, or be cut away by whatever clips the dock -- what it paints
+/// and what it hit-tests alike. Naming the edge moves the whole band inside;
+/// [`ResizeHandle::reach`] is how a caller that holds the two apart carries
+/// the band back across the gap.
 ///
 /// The hairline stays on the boundary itself: it is the container's outermost
 /// pixel, the one the neighbour's content butts up against. Moving it inward
@@ -130,6 +131,7 @@ pub struct ResizeHandle<T: 'static, E: 'static + Render> {
     axis: Axis,
     drag_value: Option<Rc<T>>,
     edge: Option<HandleEdge>,
+    reach: Pixels,
     on_drag: Option<Rc<dyn Fn(&Point<Pixels>, &mut Window, &mut App) -> Entity<E>>>,
     appearance: Option<ResizeHandleRenderer>,
 }
@@ -142,6 +144,7 @@ impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
             on_drag: None,
             drag_value: None,
             edge: None,
+            reach: px(0.),
             appearance: None,
             axis,
         }
@@ -170,6 +173,20 @@ impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
     /// straddling the boundary it resizes.
     pub fn inside(mut self, edge: HandleEdge) -> Self {
         self.edge = Some(edge);
+        self
+    }
+
+    /// Lengthens a hugging handle's grab band past the edge it hugs.
+    ///
+    /// Where a container is held apart from its neighbour, the seam one aims
+    /// at is **not** its edge but the gap beside it, and a band kept inside
+    /// the container leaves that gap dead: a divider one has to hunt for a
+    /// few pixels in. `reach` carries the band across the gap — the whole of
+    /// it, as padding on the outer side, so the hairline stays on the edge.
+    /// Only meaningful with [`ResizeHandle::inside`], and only where the
+    /// container does not clip its handle.
+    pub fn reach(mut self, reach: Pixels) -> Self {
+        self.reach = reach;
         self
     }
 }
@@ -229,6 +246,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
         cx: &mut App,
     ) -> (gpui::LayoutId, Self::RequestLayoutState) {
         let neg_offset = -HANDLE_PADDING;
+        let reach = self.reach;
         let axis = self.axis;
         let edge = self.edge;
         // Sizes are border-box: the extent has to name the whole band, padding
@@ -260,33 +278,40 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
                     // padded on the inner side only, so the hairline is the
                     // container's outermost pixel -- the seam itself.
                     // FIXME: Improve this to let the scroll bar have px(HANDLE_PADDING)
+                    //
+                    // `reach` lengthens the band past the edge, as padding on
+                    // the outer side, so the hairline keeps its pixel.
                     (Some(HandleEdge::Trailing), Axis::Horizontal) => this
                         .cursor_col_resize()
                         .top_0()
-                        .right_0()
+                        .right(-reach)
                         .h_full()
-                        .w(hug_extent)
-                        .pl(HANDLE_PADDING),
+                        .w(hug_extent + reach)
+                        .pl(HANDLE_PADDING)
+                        .pr(reach),
                     (Some(HandleEdge::Leading), Axis::Horizontal) => this
                         .cursor_col_resize()
                         .top_0()
-                        .left_0()
+                        .left(-reach)
                         .h_full()
-                        .w(hug_extent)
+                        .w(hug_extent + reach)
+                        .pl(reach)
                         .pr(HANDLE_PADDING),
                     (Some(HandleEdge::Trailing), Axis::Vertical) => this
                         .cursor_row_resize()
-                        .bottom_0()
+                        .bottom(-reach)
                         .left_0()
                         .w_full()
-                        .h(hug_extent)
-                        .pt(HANDLE_PADDING),
+                        .h(hug_extent + reach)
+                        .pt(HANDLE_PADDING)
+                        .pb(reach),
                     (Some(HandleEdge::Leading), Axis::Vertical) => this
                         .cursor_row_resize()
-                        .top_0()
+                        .top(-reach)
                         .left_0()
                         .w_full()
-                        .h(hug_extent)
+                        .h(hug_extent + reach)
+                        .pt(reach)
                         .pb(HANDLE_PADDING),
                     // Straddling the boundary: half the band on either side.
                     (None, Axis::Horizontal) => this
