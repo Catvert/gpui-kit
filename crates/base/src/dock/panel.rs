@@ -5,7 +5,7 @@ use gpui::{
 };
 
 use super::layout::PanelId;
-use super::state::PanelState;
+use super::state::{DockRegions, PanelState};
 use super::state_convert::PanelSource;
 use super::tab_group::TabGroup;
 
@@ -39,6 +39,21 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
     /// presentation decision and belongs to the layer above.
     fn zoomable(&self, cx: &App) -> bool {
         true
+    }
+
+    /// Which regions of the dock a drag may put this panel in.
+    ///
+    /// Anywhere by default, which is what the dock did before a panel could
+    /// say otherwise. An application whose centre means something — the
+    /// documents one reads, as against the tool windows one picks from — says
+    /// so here: a drag over a region this refuses resolves nothing, so no drop
+    /// indicator is shown and letting go there does nothing at all.
+    ///
+    /// It governs the **drag** alone. `add_panel`, `set_dock` and a layout
+    /// read back put a panel where they are told: the application is the one
+    /// asking then, and refusing it would be refusing its own arrangement.
+    fn regions(&self, cx: &App) -> DockRegions {
+        DockRegions::ALL
     }
 
     /// Called with the frame-end net state when this panel becomes, or stops
@@ -100,6 +115,7 @@ pub trait PanelView: 'static + Send + Sync {
     fn panel_id(&self, cx: &App) -> PanelId;
     fn closable(&self, cx: &App) -> bool;
     fn zoomable(&self, cx: &App) -> bool;
+    fn regions(&self, cx: &App) -> DockRegions;
     fn visible(&self, cx: &App) -> bool;
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App);
     fn set_zoomed(&self, zoomed: bool, window: &mut Window, cx: &mut App);
@@ -146,6 +162,10 @@ impl<T: Panel> PanelView for Entity<T> {
 
     fn zoomable(&self, cx: &App) -> bool {
         self.read(cx).zoomable(cx)
+    }
+
+    fn regions(&self, cx: &App) -> DockRegions {
+        self.read(cx).regions(cx)
     }
 
     fn visible(&self, cx: &App) -> bool {
