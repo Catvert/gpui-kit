@@ -87,6 +87,7 @@ pub(crate) struct SkinShared {
     panel_style_at: RefCell<HashMap<DockPlacement, PanelStyle>>,
     tab_variant: Cell<TabVariant>,
     toggle_button_visible: Cell<bool>,
+    menu_button_visible: Cell<bool>,
     tiles_scrollbar_mode: Cell<Option<ScrollbarMode>>,
     /// The dock whose resize handle is being dragged, if any. Only one can be.
     resizing_dock: Cell<Option<DockPlacement>>,
@@ -116,6 +117,10 @@ impl SkinShared {
 
     pub(crate) fn is_toggle_button_visible(&self) -> bool {
         self.toggle_button_visible.get()
+    }
+
+    pub(crate) fn is_menu_button_visible(&self) -> bool {
+        self.menu_button_visible.get()
     }
 
     pub(crate) fn tiles_scrollbar_mode(&self) -> Option<ScrollbarMode> {
@@ -182,6 +187,7 @@ impl DockSkin {
                 tab_variant: Cell::new(TabVariant::default()),
                 panel_style_at: RefCell::default(),
                 toggle_button_visible: Cell::new(true),
+                menu_button_visible: Cell::new(true),
                 tiles_scrollbar_mode: Cell::new(None),
                 resizing_dock: Cell::new(None),
             }),
@@ -239,6 +245,22 @@ impl DockSkin {
 
     pub fn set_toggle_button_visible(&self, visible: bool, cx: &mut App) {
         self.shared.toggle_button_visible.set(visible);
+        self.shared.notify(cx);
+    }
+
+    /// Whether tab bars carry the `…` menu at the end of their controls.
+    ///
+    /// It holds a panel's own `dropdown_menu`, the zoom, and the close — and
+    /// an application that has put all three somewhere of its own is left with
+    /// a button that opens a menu repeating what is already on screen. The
+    /// panel's entries go with it, so this is only for one that adds none, or
+    /// adds them somewhere else.
+    pub fn is_menu_button_visible(&self) -> bool {
+        self.shared.is_menu_button_visible()
+    }
+
+    pub fn set_menu_button_visible(&self, visible: bool, cx: &mut App) {
+        self.shared.menu_button_visible.set(visible);
         self.shared.notify(cx);
     }
 
