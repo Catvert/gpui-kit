@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::rc::Rc;
 
 use crate::{
     IconName, Sizable, Size, StyledExt,
@@ -11,8 +12,8 @@ use crate::{
 };
 use gpui::{
     App, AppContext as _, Axis, ElementId, Entity, IntoElement, ParentElement as _, Pixels,
-    RenderOnce, StyleRefinement, Styled, Window, container_query, div, prelude::FluentBuilder as _,
-    px, relative,
+    RenderOnce, SharedString, StyleRefinement, Styled, Window, container_query, div,
+    prelude::FluentBuilder as _, px, relative,
 };
 use rust_i18n::t;
 
@@ -40,6 +41,7 @@ pub struct Settings {
     sidebar_size_range: Range<Pixels>,
     sidebar_style: StyleRefinement,
     default_selected_index: SelectIndex,
+    on_select: Option<Rc<dyn Fn(&SharedString, &mut Window, &mut App)>>,
     header_style: StyleRefinement,
 }
 
@@ -55,6 +57,7 @@ impl Settings {
             sidebar_size_range: px(160.0)..px(360.0),
             sidebar_style: StyleRefinement::default(),
             default_selected_index: SelectIndex::default(),
+            on_select: None,
             header_style: StyleRefinement::default(),
         }
     }
@@ -100,6 +103,25 @@ impl Settings {
     /// Set the default index of the page to be selected.
     pub fn default_selected_index(mut self, index: SelectIndex) -> Self {
         self.default_selected_index = index;
+        self
+    }
+
+    /// Called when a page is chosen in the sidebar, with that page's title.
+    ///
+    /// The selection lives in element state, which exists only as long as the
+    /// settings are rendered in consecutive frames: a form put away in a dialog
+    /// comes back on `default_selected_index` and not on the page one had left.
+    /// An application that wants to remember it has to be told, and this is the
+    /// telling.
+    ///
+    /// **The title and not the index.** `SelectIndex` counts into the list the
+    /// search box has filtered, which is not the list the caller declared: an
+    /// index recorded under a query names another page once the query is gone.
+    pub fn on_select(
+        mut self,
+        handler: impl Fn(&SharedString, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_select = Some(Rc::new(handler));
         self
     }
 
@@ -196,14 +218,19 @@ impl Settings {
                         .active(is_page_active)
                         .on_click({
                             let state = state.clone();
-                            move |_, _, cx| {
+                            let on_select = self.on_select.clone();
+                            let title = page.title.clone();
+                            move |_, window, cx| {
                                 state.update(cx, |state, cx| {
                                     state.selected_index = SelectIndex {
                                         page_ix,
                                         ..Default::default()
                                     };
                                     cx.notify();
-                                })
+                                });
+                                if let Some(on_select) = on_select.as_ref() {
+                                    on_select(&title, window, cx);
+                                }
                             }
                         })
                         .when(page.groups.len() > 1, |this| {
@@ -219,7 +246,9 @@ impl Settings {
 
                                         SidebarMenuItem::new(title).active(is_active).on_click({
                                             let state = state.clone();
-                                            move |_, _, cx| {
+                                            let on_select = self.on_select.clone();
+                                            let page_title = page.title.clone();
+                                            move |_, window, cx| {
                                                 state.update(cx, |state, cx| {
                                                     state.selected_index = SelectIndex {
                                                         page_ix,
@@ -227,7 +256,10 @@ impl Settings {
                                                     };
                                                     state.deferred_scroll_group_ix = Some(group_ix);
                                                     cx.notify();
-                                                })
+                                                });
+                                                if let Some(on_select) = on_select.as_ref() {
+                                                    on_select(&page_title, window, cx);
+                                                }
                                             }
                                         })
                                     }),
