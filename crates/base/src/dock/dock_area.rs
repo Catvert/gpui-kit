@@ -1614,7 +1614,18 @@ impl DockArea {
             return Some(div().into_any_element());
         }
 
-        let content = self.render_node(pane.tree.root(), window, cx);
+        // **The clip is around the content and not around the dock.** It was
+        // on the frame below, and it took the resize handle with it: a handle
+        // is positioned against the dock's edge, and the seam one aims at is
+        // the gutter *outside* that edge, so a handle reaching for it was cut
+        // off at the very boundary it exists to straddle. The panes still need
+        // clipping — a group narrower than its content spills — so the clip
+        // moves in by one level, which is exactly as far as it has to go.
+        let content = div()
+            .size_full()
+            .overflow_hidden()
+            .child(self.render_node(pane.tree.root(), window, cx))
+            .into_any_element();
         // The box is applied here rather than left to the renderer, and that is
         // the whole point of it being here. A dock's extent along its own axis
         // is not presentation -- it is what makes the dock a column beside the
@@ -2037,6 +2048,11 @@ pub fn dock_extent(dock: &DockContext) -> Pixels {
 /// The box a dock occupies: its extent along its own axis, full across, and
 /// held at that size rather than stretched by the row it sits in.
 ///
+/// **Not clipped.** The panes inside are — see [`DockArea::render_dock`] — and
+/// that is where the clip belongs: a resize handle is the one thing in here
+/// that has business outside the box, the seam it is aimed at being the gutter
+/// beyond the edge.
+///
 /// Structural, not decorative, which is why it is built here and not in a
 /// renderer. See [`DockArea::render_dock`].
 pub fn dock_frame(dock: &DockContext, size: Pixels) -> Div {
@@ -2044,7 +2060,6 @@ pub fn dock_frame(dock: &DockContext, size: Pixels) -> Div {
         .flex()
         .flex_none()
         .relative()
-        .overflow_hidden()
         .map(|this| match dock.placement() {
             DockPlacement::Left | DockPlacement::Right => this.flex_row().h_full().w(size),
             DockPlacement::Bottom => this.w_full().h(size),

@@ -55,6 +55,7 @@ pub struct ResizeHandle<T: 'static, E: 'static + Render> {
     axis: Axis,
     drag_value: Option<Rc<T>>,
     placement: Option<Side>,
+    nudge: Pixels,
     on_drag: Option<Rc<dyn Fn(&Point<Pixels>, &mut Window, &mut App) -> Entity<E>>>,
     appearance: Option<ResizeHandleRenderer>,
 }
@@ -67,6 +68,7 @@ impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
             on_drag: None,
             drag_value: None,
             placement: None,
+            nudge: px(0.),
             appearance: None,
             axis,
         }
@@ -93,6 +95,19 @@ impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
 
     pub fn placement(mut self, placement: Side) -> Self {
         self.placement = Some(placement);
+        self
+    }
+
+    /// Moves the grab zone off the edge it is attached to, along its axis.
+    ///
+    /// A handle sits on a panel's edge, and where two panels are held apart
+    /// the seam one aims at is **not** on that edge — it is the gap beside it.
+    /// A grab zone centred on the edge is then half a gutter off, inside one
+    /// of the two panels, which reads as a divider one has to hunt for. The
+    /// caller knows how wide it holds them apart and which side the gap is on,
+    /// so it says so here: positive moves toward the panel's own end.
+    pub fn nudge(mut self, nudge: Pixels) -> Self {
+        self.nudge = nudge;
         self
     }
 }
@@ -138,7 +153,15 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
         window: &mut Window,
         cx: &mut App,
     ) -> (gpui::LayoutId, Self::RequestLayoutState) {
-        let neg_offset = -HANDLE_PADDING;
+        // **The whole box is the grab zone**, and the line is what sits inside
+        // it: a `w(HANDLE_SIZE)` with padding around it is a *one pixel* target
+        // — padding falls inside a border box, which is what taffy lays out —
+        // so the zone one had to hit was the painted line itself. The padding
+        // is kept, and is now what centres that line in the zone.
+        let grab = HANDLE_SIZE + HANDLE_PADDING * 2.;
+        // Half of it, so that what is placed is the zone's **centre**: on the
+        // edge by default, and on the seam beside it where a caller nudges.
+        let neg_offset = -(grab / 2.);
         let axis = self.axis;
 
         window.with_element_state(id.unwrap(), |state, window| {
@@ -159,31 +182,34 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
                     )
                 })
                 .map(|this| match self.placement {
-                    Some(Side::Left) => {
-                        // Special for Left Dock
-                        //  FIXME: Improve this to let the scroll bar have px(HANDLE_PADDING)
-                        this.cursor_col_resize()
-                            .top_0()
-                            .right(px(1.))
-                            .h_full()
-                            .w(HANDLE_SIZE)
-                            .pl(HANDLE_PADDING)
-                    }
+                    // Attached to the panel's far edge — the left dock, whose
+                    // seam with the centre is on its right. It used to be a
+                    // case of its own, pushed a pixel *inside* the dock so as
+                    // not to sit on its scrollbar; it is the same formula as
+                    // the others now, mirrored, and `nudge` is what puts it on
+                    // the seam instead of on either panel.
+                    Some(Side::Left) => this
+                        .cursor_col_resize()
+                        .top_0()
+                        .right(neg_offset - self.nudge)
+                        .h_full()
+                        .w(grab)
+                        .px(HANDLE_PADDING),
                     _ => this
                         .when(axis.is_horizontal(), |this| {
                             this.cursor_col_resize()
                                 .top_0()
-                                .left(neg_offset)
+                                .left(neg_offset + self.nudge)
                                 .h_full()
-                                .w(HANDLE_SIZE)
+                                .w(grab)
                                 .px(HANDLE_PADDING)
                         })
                         .when(axis.is_vertical(), |this| {
                             this.cursor_row_resize()
-                                .top(neg_offset)
+                                .top(neg_offset + self.nudge)
                                 .left_0()
                                 .w_full()
-                                .h(HANDLE_SIZE)
+                                .h(grab)
                                 .py(HANDLE_PADDING)
                         }),
                 })

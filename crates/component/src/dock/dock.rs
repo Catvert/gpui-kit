@@ -130,7 +130,7 @@ impl DockSkin {
         &self,
         dock: &DockContext,
         _: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) -> impl IntoElement {
         let placement = dock.placement();
         let shared = self.shared().clone();
@@ -146,8 +146,22 @@ impl DockSkin {
             DockPlacement::Center => "resize-handle-center",
         };
 
+        // **Half the gutter, toward the centre.** The docks are held apart
+        // from it by `split_gap`, and that gap — not the dock's own edge — is
+        // the seam one aims at: without this the grab zone straddles the edge
+        // and therefore sits two pixels inside the dock, five for the left one,
+        // which is a divider one has to hunt for. `nudge` counts from the edge
+        // the handle is attached to, and the left dock's is its far one, hence
+        // the sign.
+        let gutter = self.split_gap(cx) / 2.;
+        let nudge = match placement.is_left() {
+            true => gutter,
+            false => -gutter,
+        };
+
         resize_handle(id, placement.axis())
             .when(placement.is_left(), |this| this.placement(Side::Left))
+            .nudge(nudge)
             .on_drag(ResizePanel, move |info, _, _, cx| {
                 cx.stop_propagation();
                 shared.resizing_dock().set(Some(placement));
@@ -264,6 +278,8 @@ impl Element for DockResizeTracker {
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
+
+    use crate::tab::TabVariant;
 
     use gpui::{
         App, Entity, IntoElement as _, Modifiers, MouseButton, TestAppContext, VisualTestContext,
@@ -399,9 +415,22 @@ mod tests {
 
     fn area_with_side_docks(cx: &mut TestAppContext) -> (Entity<DockArea>, &mut VisualTestContext) {
         cx.update(|cx| crate::init(cx));
-        let (area, cx) = cx.add_window_view(|window, cx| {
-            DockArea::new("test", None, window, cx).with_renderer(DockSkin::new(cx))
+        let held: Rc<std::cell::RefCell<Option<Rc<DockSkin>>>> = Rc::default();
+        let (area, cx) = cx.add_window_view({
+            let held = held.clone();
+            move |window, cx| {
+                let skin = DockSkin::new(cx);
+                *held.borrow_mut() = Some(skin.clone());
+                DockArea::new("test", None, window, cx).with_renderer(skin)
+            }
         });
+        // The variant an application that spaces its cards uses, and the only
+        // one with a gutter between them: the seam these tests aim at does not
+        // exist under the plain tabs — see `split_gap`. Set **after** the area
+        // is built: it notifies the area, and notifying one that is still being
+        // constructed is the re-entrant update gpui refuses.
+        let skin = held.borrow_mut().take().expect("the skin was built");
+        cx.update(|_, cx| skin.set_tab_variant(TabVariant::Segmented, cx));
         cx.simulate_resize(size(px(800.), px(600.)));
         cx.update(|window, cx| {
             area.update(cx, |area, cx| {
@@ -439,7 +468,9 @@ mod tests {
         let (area, cx) = area_with_side_docks(cx);
         cx.update(|window, cx| window.draw(cx).clear(cx));
 
-        // The left dock is 200px wide, so its handle sits at x ∈ [198, 199).
+        // The left dock is 200px wide, so the seam it shares with the centre
+        // is the four-pixel gutter at x ∈ [200, 204) and its handle straddles
+        // it — see `the_handle_is_centred_on_the_seam_and_not_on_the_panel`.
         cx.simulate_mouse_down(
             point(px(198.5), px(300.)),
             MouseButton::Left,
@@ -477,6 +508,50 @@ mod tests {
             "the right dock must not move when the left handle is dragged"
         );
         assert_eq!(left, Some(px(240.)), "the left dock follows the pointer");
+    }
+
+    /// **A handle is centred on the seam, not on the panel's edge.**
+    ///
+    /// The docks are held apart from the centre by `split_gap`, and that gap is
+    /// what one aims at. The grab zone used to be centred on the dock's own
+    /// edge, which put it two pixels inside the dock — five for the left one,
+    /// which was a case of its own — so the pointer had to be taken off the
+    /// visible divider to find it. Pressing the middle of the gutter, which is
+    /// the one place nobody should have to aim past, is what this pins.
+    #[gpui::test]
+    fn the_handle_is_centred_on_the_seam_and_not_on_the_panel(cx: &mut TestAppContext) {
+        let (area, cx) = area_with_side_docks(cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // 200px of dock, then a four-pixel gutter: its middle is 202.
+        cx.simulate_mouse_down(
+            point(px(202.), px(300.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            point(px(208.), px(300.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            point(px(260.), px(300.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            point(px(260.), px(300.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+
+        let left = cx.update(|_, cx| area.read(cx).dock_size(DockPlacement::Left));
+        assert_eq!(
+            left,
+            Some(px(260.)),
+            "the middle of the gutter must be the handle"
+        );
     }
 
     /// Dragging the divider between the centre and a right dock resizes it.
