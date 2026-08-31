@@ -544,13 +544,17 @@ impl TabGroup {
         cx: &mut Context<Self>,
     ) {
         let bounds = drag.bounds;
-        if !bounds.contains(&drag.event.position) {
+        let dragged = drag.drag(cx);
+        // A panel that does not belong in this region resolves nothing, so
+        // there is nothing to draw and nothing a release can land on. Said
+        // here and not at the drop alone: a drop refused under an indicator
+        // that promised it would land is a gesture that looks as if it worked.
+        if !bounds.contains(&drag.event.position) || !dragged.accepts(self.constraints.region()) {
             self.clear_drop_indicator(cx);
             return;
         }
 
         let placement = split_placement_at(bounds, drag.event.position);
-        let dragged = drag.drag(cx);
         // The placeholder flies in from wherever the preview currently is.
         let source = DropPlaceholderBounds::new(
             drag.event.position - dragged.drag_offset() - bounds.origin,
@@ -658,6 +662,14 @@ impl TabGroup {
         cx: &mut Context<Self>,
     ) {
         let indicator = self.drop_indicator.take();
+        // The region has the last word, and it has to be said again here: the
+        // tab bar supplies its own slot without ever consulting an indicator,
+        // so a panel refused over the content was still accepted onto the
+        // strip of tabs above it.
+        if !drag.accepts(self.constraints.region()) {
+            cx.notify();
+            return;
+        }
         let placement = match ix {
             Some(_) => None,
             None => indicator.and_then(|indicator| indicator.placement()),
@@ -890,7 +902,7 @@ impl TabGroupContext {
     pub fn drag_panel(&self, ix: usize, cx: &App) -> Option<DragPanel> {
         self.panels
             .get(ix)
-            .map(|panel| DragPanel::new(panel.panel_id(cx), self.node))
+            .map(|panel| DragPanel::new(panel.panel_id(cx), self.node).allowing(panel.regions(cx)))
     }
 
     /// A panel dropped on the tab bar. `ix` names the slot it lands in, or
@@ -1000,6 +1012,7 @@ impl TabGroupRenderer for BareTabGroup {
 mod tests {
     use std::cell::RefCell;
 
+    use crate::dock::DockRegions;
     use gpui::{
         AppContext as _, Entity, Modifiers, MouseButton, StatefulInteractiveElement as _,
         TestAppContext, VisualTestContext, point, px, size,
@@ -1268,6 +1281,41 @@ mod tests {
         });
         cx.run_until_parked();
 
+        assert_eq!(
+            *events.borrow(),
+            vec!["drop panel 99 from 7 into tabs 1 at None activate=true"]
+        );
+    }
+
+    /// A panel that does not belong in this region lands nowhere, and it is
+    /// refused on the tab bar as well as over the content: the bar supplies
+    /// its own slot without ever consulting the indicator the content area
+    /// declined to draw.
+    #[gpui::test]
+    fn a_panel_that_refuses_this_region_is_not_dropped(cx: &mut TestAppContext) {
+        let log = log_of();
+        let (group, _panels, cx) = build_group(&log, &["a"], cx);
+        let events = record_events(&group, cx);
+
+        // The group is in the centre; the panel says it belongs to the edges.
+        let refused =
+            DragPanel::new(PanelId::from_u64(99), elsewhere()).allowing(DockRegions::EDGES);
+        cx.update(|_, cx| {
+            group.update(cx, |group, cx| {
+                group.on_drop(&refused, None, true, cx);
+                group.on_drop(&refused, Some(0), true, cx);
+            });
+        });
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty());
+
+        // And one that does belong is dropped as it always was.
+        let welcome =
+            DragPanel::new(PanelId::from_u64(99), elsewhere()).allowing(DockRegions::CENTER);
+        cx.update(|_, cx| {
+            group.update(cx, |group, cx| group.on_drop(&welcome, None, true, cx));
+        });
+        cx.run_until_parked();
         assert_eq!(
             *events.borrow(),
             vec!["drop panel 99 from 7 into tabs 1 at None activate=true"]

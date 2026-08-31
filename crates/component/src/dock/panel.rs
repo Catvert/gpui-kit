@@ -267,6 +267,10 @@ impl gpui_base::dock::PanelView for PanelHandle {
         self.0.zoomable(cx)
     }
 
+    fn regions(&self, cx: &App) -> gpui_base::dock::DockRegions {
+        self.0.regions(cx)
+    }
+
     fn visible(&self, cx: &App) -> bool {
         self.0.visible(cx)
     }

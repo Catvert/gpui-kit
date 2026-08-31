@@ -51,7 +51,7 @@ pub use gpui_base::dock::PanelView as BasePanelView;
 /// it. A skin reads a dock through [`DockContext`].
 pub use gpui_base::dock::{
     AnyDrag, DRAG_BAR_HEIGHT, DockArea, DockAreaRenderer, DockAreaState, DockContext, DockEvent,
-    DockLayout, DockPlacement, DockSizing, DockState, DragPanel, DropIndicator,
+    DockLayout, DockPlacement, DockRegions, DockSizing, DockState, DragPanel, DropIndicator,
     DropPlaceholderBounds, DropTarget, EditResult, HANDLE_SIZE, InsertTarget, NodeId, PaneNode,
     PaneRef, PaneTree, PanelBuildContext, PanelBuilder, PanelEvent, PanelId, PanelInfo,
     PanelRegistry, PanelSource, PanelState, ResizeSide, RootKind, TabGroup, TabGroupConstraints,

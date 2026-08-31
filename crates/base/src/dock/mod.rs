@@ -195,7 +195,9 @@ pub use layout::{
 };
 pub use panel::{Panel, PanelEvent, PanelView};
 pub use registry::{PanelBuildContext, PanelRegistry, register_panel};
-pub use state::{DockAreaState, DockPlacement, DockState, PanelInfo, PanelState, TileMeta};
+pub use state::{
+    DockAreaState, DockPlacement, DockRegions, DockState, PanelInfo, PanelState, TileMeta,
+};
 /// Both halves of the persistence seam. `PaneTree::to_state` reads panel
 /// properties through `PanelSource`; `PaneTree::from_state` turns persisted
 /// leaves back into panels through `PanelBuilder`. Exporting only the first
