@@ -105,6 +105,25 @@ pub trait Panel: gpui_base::dock::Panel {
         None::<gpui::Div>
     }
 
+    /// An element placed **after the last tab**, inside the run of tabs.
+    ///
+    /// Not the same place as [`title_suffix`](Panel::title_suffix), which is
+    /// pinned to the far end of the bar beside the toolbar: this one follows
+    /// the tabs and moves with them. It is where a "new tab" control belongs —
+    /// the gesture is "one more of these", so it reads as the next tab rather
+    /// than as one of the controls that act on the group.
+    ///
+    /// Read off the **displayed** panel, as the title suffix is: a group is
+    /// made of whatever has been dragged into it, and the panel on screen is
+    /// the one the bar is about.
+    fn tab_bar_trailing(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        None::<gpui::Div>
+    }
+
     /// Buttons for the title bar's toolbar.
     fn toolbar_buttons(
         &mut self,
@@ -154,6 +173,7 @@ pub trait PanelView: gpui_base::dock::PanelView {
     fn title(&self, window: &mut Window, cx: &mut App) -> AnyElement;
     fn title_style(&self, cx: &App) -> Option<TitleStyle>;
     fn title_suffix(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement>;
+    fn tab_bar_trailing(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement>;
     fn toolbar_buttons(&self, window: &mut Window, cx: &mut App) -> Option<Vec<Button>>;
     fn dropdown_menu(&self, menu: PopupMenu, window: &mut Window, cx: &mut App) -> PopupMenu;
     fn zoom_control(&self, cx: &App) -> Option<PanelControl>;
@@ -176,6 +196,13 @@ impl<T: Panel> PanelView for Entity<T> {
     fn title_suffix(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         self.update(cx, |this, cx| {
             this.title_suffix(window, cx)
+                .map(|element| element.into_any_element())
+        })
+    }
+
+    fn tab_bar_trailing(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+        self.update(cx, |this, cx| {
+            this.tab_bar_trailing(window, cx)
                 .map(|element| element.into_any_element())
         })
     }

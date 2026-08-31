@@ -44,6 +44,7 @@ pub struct TabBar {
     scroll_handle: Option<ScrollHandle>,
     prefix: Option<AnyElement>,
     suffix: Option<AnyElement>,
+    trailing: Option<AnyElement>,
     children: SmallVec<[Tab; 2]>,
     last_empty_space: AnyElement,
     selected_index: Option<usize>,
@@ -66,6 +67,7 @@ impl TabBar {
             scroll_handle: None,
             prefix: None,
             suffix: None,
+            trailing: None,
             variant: TabVariant::default(),
             size: Size::default(),
             last_empty_space: div().w_3().into_any_element(),
@@ -135,6 +137,16 @@ impl TabBar {
     /// Set the suffix element of the TabBar
     pub fn suffix(mut self, suffix: impl IntoElement) -> Self {
         self.suffix = Some(suffix.into_any_element());
+        self
+    }
+
+    /// Set an element that follows the **last tab**, inside the run of tabs.
+    ///
+    /// Not the suffix, which is pinned to the far end of the bar: this one
+    /// sits where the next tab would, and scrolls with them. It is where a
+    /// "new tab" control belongs — the gesture is "one more of these".
+    pub fn trailing(mut self, trailing: impl IntoElement) -> Self {
+        self.trailing = Some(trailing.into_any_element());
         self
     }
 
@@ -515,6 +527,7 @@ impl RenderOnce for TabBar {
                             })
                             .when_some(indicator_element, |this, ind| this.child(ind))
                             .children(rendered_tabs)
+                            .children(self.trailing)
                             .when(has_suffix_or_menu, |this| this.child(self.last_empty_space)),
                     ),
             )
@@ -668,5 +681,35 @@ mod tests {
         assert!(prefix.size.width > px(0.));
         assert!(child.size.width > px(0.));
         assert!(suffix.size.width > px(0.));
+    }
+
+    struct TrailingHarness;
+
+    impl Render for TrailingHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            TabBar::new("trailing-tabs")
+                .w(px(320.))
+                .child(Tab::new().child(div().debug_selector(|| "only-tab".into()).child("One")))
+                .trailing(div().debug_selector(|| "bar-trailing".into()).child("+"))
+                .suffix(div().debug_selector(|| "bar-suffix".into()).child("S"))
+        }
+    }
+
+    /// The trailing element follows the last tab and stops there: the suffix
+    /// is the far end of the bar, and a "new tab" control put there reads as
+    /// one of the controls that act on the group rather than as the next tab.
+    #[gpui::test]
+    fn the_trailing_element_follows_the_last_tab(cx: &mut TestAppContext) {
+        cx.update(crate::theme::init);
+        let (_, cx) = cx.add_window_view(|_, _| TrailingHarness);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let tab = cx.debug_bounds("only-tab").unwrap();
+        let trailing = cx.debug_bounds("bar-trailing").unwrap();
+        let suffix = cx.debug_bounds("bar-suffix").unwrap();
+        assert!(tab.origin.x < trailing.origin.x);
+        assert!(trailing.origin.x < suffix.origin.x);
+        // And it is beside the tab, not pushed against the suffix.
+        assert!(trailing.origin.x - tab.origin.x < suffix.origin.x - trailing.origin.x);
     }
 }
