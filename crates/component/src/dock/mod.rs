@@ -85,6 +85,7 @@ pub(crate) struct SkinShared {
     tab_variant: Cell<TabVariant>,
     toggle_button_visible: Cell<bool>,
     close_button_visible: Cell<bool>,
+    menu_button_visible: Cell<bool>,
     /// The dock whose resize handle is being dragged, if any. Only one can be.
     resizing_dock: Cell<Option<DockPlacement>>,
 }
@@ -113,6 +114,10 @@ impl SkinShared {
 
     pub(crate) fn is_toggle_button_visible(&self) -> bool {
         self.toggle_button_visible.get()
+    }
+
+    pub(crate) fn is_menu_button_visible(&self) -> bool {
+        self.menu_button_visible.get()
     }
 
     pub(crate) fn resizing_dock(&self) -> &Cell<Option<DockPlacement>> {
@@ -176,6 +181,7 @@ impl DockSkin {
                 panel_style_at: RefCell::default(),
                 toggle_button_visible: Cell::new(true),
                 close_button_visible: Cell::new(false),
+                menu_button_visible: Cell::new(true),
                 resizing_dock: Cell::new(None),
             }),
         })
@@ -239,6 +245,22 @@ impl DockSkin {
     /// own close constraints still decide whether its button appears.
     pub fn set_close_button_visible(&self, visible: bool, cx: &mut App) {
         self.shared.close_button_visible.set(visible);
+        self.shared.notify(cx);
+    }
+
+    /// Whether tab bars carry the `…` menu at the end of their controls.
+    ///
+    /// It holds a panel's own `dropdown_menu`, the zoom, and the close — and
+    /// an application that has put all three somewhere of its own is left with
+    /// a button that opens a menu repeating what is already on screen. The
+    /// panel's entries go with it, so this is only for one that adds none, or
+    /// adds them somewhere else.
+    pub fn is_menu_button_visible(&self) -> bool {
+        self.shared.is_menu_button_visible()
+    }
+
+    pub fn set_menu_button_visible(&self, visible: bool, cx: &mut App) {
+        self.shared.menu_button_visible.set(visible);
         self.shared.notify(cx);
     }
 }
