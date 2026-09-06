@@ -16,7 +16,7 @@ Use [Input](./input.md) for single-line values and
 ## Import
 
 ```rust
-use gpui_base::input::{Editor, EditorState, TabSize};
+use gpui_kit::base::input::{Editor, EditorState, TabSize};
 ```
 
 ## Basic usage
@@ -72,6 +72,23 @@ the application theme remains the source of colors and font styles. The adapter
 is intentionally simple and reparses the short sample after each edit;
 production integrations can keep incremental parser state in their
 `InputHighlighter` implementation.
+
+## Font
+
+The editor has no font setting of its own: it paints with the ambient text
+style, so the family, size, weight, and line height come from the element the
+application wraps it in.
+
+```rust
+div()
+    .font_family("JetBrains Mono")
+    .text_size(px(13.))
+    .child(Editor::new(&editor))
+```
+
+A relative `line_height` keeps the rows in step with the glyphs at any size; an
+absolute one stays put. For a ready-made monospace treatment, see the
+[`gpui-component` Editor](../../docs/components/editor.md).
 
 ## Presentation
 

@@ -961,6 +961,25 @@ impl Scrollbar {
         )
     }
 
+    /// The thumb colour a scrollbar falls back to when nothing has overridden
+    /// it, taken from the active theme rather than fixed.
+    ///
+    /// It used to be literal black at these alphas. That reads as an ordinary
+    /// grey thumb on a light surface and as very nearly nothing at all on a
+    /// dark one, and no palette an application installed could change it:
+    /// `Theme` carries `scrollbar` beside `tokens` rather than derived from
+    /// them, so a theme swap moved every token except the ones the scrollbar
+    /// actually paints with.
+    ///
+    /// `foreground` is the token that already means "ink on this surface" and
+    /// already flips with the appearance, so on a light theme this stays within
+    /// a hair of the old constant and on a dark one it becomes visible. An
+    /// explicit `ScrollbarStyles` still wins: this is the bottom of the
+    /// cascade, not a new top of it.
+    fn thumb_default_background(cx: &App, alpha: f32) -> Background {
+        cx.theme().tokens.colors.foreground.alpha(alpha).into()
+    }
+
     fn thumb_defaults(
         background: Background,
         width: Pixels,
@@ -993,7 +1012,7 @@ impl Scrollbar {
             &self.styles.thumb_active,
             &global.thumb_active,
             Self::thumb_defaults(
-                gpui::black().alpha(0.55).into(),
+                Self::thumb_default_background(cx, 0.55),
                 THUMB_ACTIVE_WIDTH,
                 THUMB_ACTIVE_INSET,
                 THUMB_ACTIVE_RADIUS,
@@ -1019,7 +1038,7 @@ impl Scrollbar {
             &self.styles.thumb_hover,
             &global.thumb_hover,
             Self::thumb_defaults(
-                gpui::black().alpha(0.55).into(),
+                Self::thumb_default_background(cx, 0.55),
                 THUMB_ACTIVE_WIDTH,
                 THUMB_ACTIVE_INSET,
                 THUMB_ACTIVE_RADIUS,
@@ -1045,7 +1064,7 @@ impl Scrollbar {
             &self.styles.thumb,
             &global.thumb,
             Self::thumb_defaults(
-                gpui::black().alpha(0.35).into(),
+                Self::thumb_default_background(cx, 0.35),
                 THUMB_WIDTH,
                 THUMB_INSET,
                 THUMB_RADIUS,
@@ -1072,7 +1091,7 @@ impl Scrollbar {
             &self.styles.thumb,
             &global.thumb,
             Self::thumb_defaults(
-                gpui::black().alpha(0.35).into(),
+                Self::thumb_default_background(cx, 0.35),
                 THUMB_WIDTH,
                 THUMB_INSET,
                 THUMB_RADIUS,
@@ -1461,6 +1480,14 @@ impl Element for Scrollbar {
                     let painted_thumb_bg = state.thumb_bg.clone().opacity(visibility_opacity);
 
                     window.set_cursor_style(CursorStyle::default(), &state.bar_hitbox);
+                    // For the mouse listeners below: the bar's bounds say where
+                    // the bar is, the hitbox says whether the bar is what the
+                    // pointer is on. The two differ under anything painted over
+                    // the bar with `occlude()` — a dock's resize handle
+                    // overlaps the last few pixels of the track — and a raw
+                    // `bounds.contains` there stole the press: the divider
+                    // never moved, the content jumped instead.
+                    let bar_hitbox = state.bar_hitbox.clone();
 
                     window.paint_layer(hitbox_bounds, |cx| {
                         cx.paint_quad(fill(painted_bounds, painted_track_bg));
@@ -1516,9 +1543,13 @@ impl Element for Scrollbar {
                         window.on_mouse_event({
                             let state = scrollbar_state.clone();
                             let scroll_handle = self.scroll_handle.clone();
+                            let bar_hitbox = bar_hitbox.clone();
 
-                            move |event: &MouseDownEvent, phase, _, cx| {
-                                if phase.bubble() && bounds.contains(&event.position) {
+                            move |event: &MouseDownEvent, phase, window, cx| {
+                                if phase.bubble()
+                                    && bounds.contains(&event.position)
+                                    && bar_hitbox.is_hovered(window)
+                                {
                                     cx.stop_propagation();
 
                                     if thumb_bounds.contains(&event.position) {
@@ -1527,8 +1558,6 @@ impl Element for Scrollbar {
 
                                         scroll_handle.start_drag();
                                         state.set(state.get().with_drag_pos(axis, pos));
-
-                                        cx.notify(view_id);
                                     } else {
                                         // click on the scrollbar, jump to the position
                                         // Set the thumb bar center to the click position
@@ -1556,6 +1585,8 @@ impl Element for Scrollbar {
                                             ));
                                         }
                                     }
+
+                                    cx.notify(view_id);
                                 }
                             }
                         });
@@ -1566,13 +1597,19 @@ impl Element for Scrollbar {
                         let state = scrollbar_state.clone();
                         let max_fps_duration = Duration::from_millis((1000 / self.max_fps) as u64);
 
-                        move |event: &MouseMoveEvent, _, _, cx| {
+                        move |event: &MouseMoveEvent, _, window, cx| {
                             let mut notify = false;
                             // When is hover to show mode or it was visible,
                             // we need to update the hovered state and increase the last_scroll_time.
                             let need_hover_to_update = is_hover_to_show || is_visible;
-                            // Update hovered state for scrollbar
-                            if bounds.contains(&event.position) && need_hover_to_update {
+                            // Update hovered state for scrollbar. Through the
+                            // hitbox, not the bounds: a bar lighting up under
+                            // an occluding handle invites the very press the
+                            // mouse-down listener now refuses.
+                            if bounds.contains(&event.position)
+                                && bar_hitbox.is_hovered(window)
+                                && need_hover_to_update
+                            {
                                 let hover_changed = state.get().hovered_axis != Some(axis);
                                 state.set(state.get().with_hovered(Some(axis), Instant::now()));
                                 notify |= hover_changed;
@@ -2167,6 +2204,41 @@ mod tests {
     }
 
     #[gpui::test]
+    fn unstyled_thumb_follows_the_theme_rather_than_a_fixed_colour(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let scrollbar = Scrollbar::new(&TestHandle::new(Size::default()));
+
+            let light = gpui::hsla(0., 0., 0.04, 1.0);
+            crate::Theme::global_mut(cx).tokens.colors.foreground = light;
+            let (on_light, ..) = scrollbar.style_for_normal(cx);
+
+            let dark = gpui::hsla(0., 0., 0.98, 1.0);
+            crate::Theme::global_mut(cx).tokens.colors.foreground = dark;
+            let (on_dark, ..) = scrollbar.style_for_normal(cx);
+
+            assert_eq!(on_light, Background::from(light.alpha(0.35)));
+            assert_eq!(on_dark, Background::from(dark.alpha(0.35)));
+            // The point of the change: a thumb that never moved with the
+            // palette was invisible on one of the two surfaces.
+            assert_ne!(on_light, on_dark);
+        });
+    }
+
+    #[gpui::test]
+    fn a_styled_thumb_still_beats_the_theme_derived_default(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let chosen = gpui::hsla(0.6, 0.5, 0.5, 1.0);
+            crate::Theme::global_mut(cx).tokens.colors.foreground = gpui::hsla(0., 0., 0.98, 1.0);
+
+            let scrollbar = Scrollbar::new(&TestHandle::new(Size::default()))
+                .styles(|styles| styles.thumb(|style| style.bg(chosen)));
+            let (thumb, ..) = scrollbar.style_for_normal(cx);
+
+            assert_eq!(thumb, Background::from(chosen));
+        });
+    }
+
+    #[gpui::test]
     fn instance_styles_override_theme_scrollbar_defaults(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let theme_track = gpui::hsla(0.1, 0.2, 0.3, 1.0);
@@ -2246,6 +2318,58 @@ mod tests {
         cx.simulate_click(point(px(80.), px(95.)), Modifiers::default());
         assert!(horizontal.offset().x < px(0.));
         assert_eq!(horizontal.offset().y, px(0.));
+    }
+
+    /// A press on the track under an occluding element is not a track click.
+    ///
+    /// The listener is window-level — no hitbox gates it by itself — and it
+    /// used to test the raw bounds. A dock's resize handle overlaps the last
+    /// pixels of a panel's scrollbar, and grabbing the divider there scrolled
+    /// the panel instead of moving the divider: the press was consumed, and
+    /// the handle underneath never saw it.
+    struct OccludedHarness {
+        handle: TestHandle,
+    }
+
+    impl Render for OccludedHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use gpui::InteractiveElement as _;
+            div()
+                .relative()
+                .size(px(100.))
+                .child(
+                    Scrollbar::new(&self.handle)
+                        .axis(ScrollbarAxis::Vertical)
+                        .mode(ScrollbarMode::Always),
+                )
+                // What a dock's divider does: an occluding strip over the
+                // track's last pixels, painted after the bar.
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .h_full()
+                        .w(px(10.))
+                        .occlude(),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn a_press_under_an_occluding_element_is_not_a_track_click(cx: &mut TestAppContext) {
+        let handle = TestHandle::new(size(px(100.), px(500.)));
+        let (_, cx) = cx.add_window_view({
+            let handle = handle.clone();
+            move |_, _| OccludedHarness { handle }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // The same press `vertical_track_click_updates_vertical_offset` makes,
+        // with the strip in front: the offset must not move.
+        cx.simulate_click(point(px(95.), px(80.)), Modifiers::default());
+        assert_eq!(handle.offset().y, px(0.));
+        assert_eq!(handle.drag_starts.get(), 0);
     }
 
     #[gpui::test]

@@ -3,7 +3,7 @@
         <div class="home-nav__inner">
             <a :href="homeHref" class="home-brand">
                 <img :src="isDark ? darkLogoHref : logoHref" alt="" />
-                <span>GPUI Component</span>
+                <span>GPUI Kit</span>
             </a>
             <nav aria-label="Primary navigation">
                 <template v-for="item in navItems" :key="item.text">
@@ -35,7 +35,7 @@
                     <span>{{ copy.searchShort }}</span>
                 </a>
                 <a
-                    href="https://github.com/longbridge/gpui-component"
+                    href="https://github.com/longbridge/gpui-kit"
                     target="_blank"
                     class="home-nav__github"
                     :title="`${stars} stars on GitHub`"
@@ -103,11 +103,10 @@
             <div class="hero__grid" aria-hidden="true"></div>
             <div class="hero__inner">
                 <div class="hero__copy">
-                    <a href="https://gpui.rs" target="_blank" class="eyebrow">
+                    <span class="eyebrow">
                         <span class="eyebrow__pulse" aria-hidden="true"></span>
                         {{ copy.eyebrow }}
-                        <ArrowRight />
-                    </a>
+                    </span>
                     <h1>{{ copy.title }}</h1>
                     <p class="hero__lead">{{ copy.lead }}</p>
                     <div class="hero__actions">
@@ -152,7 +151,7 @@
                         /></span>
                         <span class="mac-window__title">main.rs</span>
                     </div>
-                    <pre><code><span class="c-kw">use</span> gpui_component::{<span class="c-mod">button</span>::*, *};
+                    <pre><code><span class="c-kw">use</span> gpui_kit::component::{<span class="c-mod">button</span>::*, *};
 
 <span class="c-kw">impl</span> <span class="c-type">Render</span> <span class="c-kw">for</span> <span class="c-type">HelloWorld</span> {
     <span class="c-kw">fn</span> <span class="c-fn">render</span>(&<span class="c-kw">mut</span> self, _: &<span class="c-kw">mut</span> <span class="c-type">Window</span>, cx: &<span class="c-kw">mut</span> <span class="c-type">Context</span>&lt;Self&gt;) -&gt; <span class="c-kw">impl</span> <span class="c-type">IntoElement</span> {
@@ -299,6 +298,28 @@
                             >{{ copy.startBase }} <ArrowRight
                         /></a>
                     </article>
+
+                    <article class="path">
+                        <div class="path__meta">
+                            <Braces />
+                            <span>gpui-shell</span>
+                        </div>
+                        <h3>{{ copy.scriptTitle }}</h3>
+                        <p>{{ copy.scriptDescription }}</p>
+                        <pre><code><span class="c-kw">import</span> { Button, text } <span class="c-kw">from</span> <span class="c-str">"gpui"</span>;
+
+<span class="c-type">Button</span>.<span class="c-fn">new</span>(<span class="c-str">"save"</span>)
+    .<span class="c-fn">on_click</span>((_e, cx) =&gt; <span class="c-kw">this</span>.<span class="c-fn">save</span>(cx))
+    .<span class="c-fn">child</span>(<span class="c-fn">text</span>(<span class="c-str">"Save changes"</span>))</code></pre>
+                        <ul>
+                            <li v-for="item in copy.scriptPoints" :key="item">
+                                <Check />{{ item }}
+                            </li>
+                        </ul>
+                        <a :href="shellHref" class="path__link"
+                            >{{ copy.startShell }} <ArrowRight
+                        /></a>
+                    </article>
                 </div>
             </div>
         </section>
@@ -329,24 +350,23 @@
 
     <footer class="home-footer">
         <div class="home-footer__brand">
-            <strong>GPUI Component</strong>
+            <strong>GPUI Kit</strong>
             <p>
                 {{ copy.footerPrefix }}
                 <a href="https://longbridge.com" target="_blank">Longbridge</a>.
             </p>
         </div>
         <nav :aria-label="copy.footerNav">
-            <a href="https://gpui.rs" target="_blank">GPUI</a>
             <a :href="contributorsHref">{{ copy.contributors }}</a>
             <a :href="skillsHref" target="_blank">Skills</a>
             <a :href="llmsHref" target="_blank">llms-full.txt</a>
             <a
-                href="https://github.com/longbridge/gpui-component/issues"
+                href="https://github.com/longbridge/gpui-kit/issues"
                 target="_blank"
                 >{{ copy.reportBug }}</a
             >
             <a
-                href="https://github.com/longbridge/gpui-component/discussions"
+                href="https://github.com/longbridge/gpui-kit/discussions"
                 target="_blank"
                 >{{ copy.discussion }}</a
             >
@@ -367,6 +387,7 @@ import {
     ArrowRight,
     ChevronDown,
     Blocks,
+    Braces,
     Check,
     Copy,
     Gauge,
@@ -423,6 +444,7 @@ const componentsHref = computed(() =>
     withBase(`${localePrefix.value}/docs/components`),
 );
 const baseHref = computed(() => withBase("/base/"));
+const shellHref = computed(() => withBase(`${localePrefix.value}/shell/`));
 const docsHref = computed(() => withBase(`${localePrefix.value}/docs/`));
 const searchHref = computed(() =>
     withBase(`${localePrefix.value}/docs/components`),
@@ -465,19 +487,11 @@ const capIcons = {
     theme: Palette,
 };
 
-// The crate is not published yet, so the real dependency is a git one — the
-// hero must not suggest a `cargo add` that would fail. The line on screen is
-// the headline dependency; the clipboard gets the full block from the Getting
-// Started guide, because gpui-component alone does not build.
-const installCommand =
-    'gpui-component = { git = "https://github.com/longbridge/gpui-component" }';
-const installSnippet = [
-    "[dependencies]",
-    'gpui = { git = "https://github.com/zed-industries/zed" }',
-    'gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }',
-    'gpui-component = { git = "https://github.com/longbridge/gpui-component" }',
-    'gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }',
-].join("\n");
+// `gpui-kit` is the one dependency an application needs: it pins GPUI and
+// carries every layer. The line on screen is what the clipboard gets, with
+// the `[dependencies]` header so it pastes straight into Cargo.toml.
+const installCommand = 'gpui-kit = "0.6.0"';
+const installSnippet = ["[dependencies]", installCommand].join("\n");
 
 const copied = ref(false);
 let copyTimer;
@@ -504,9 +518,9 @@ const copy = computed(() =>
               themeNav: "切换主题",
               menuNav: "打开菜单",
               copyLabel: "复制安装命令",
-              eyebrow: "基于 GPUI，经过 Longbridge 生产验证",
+              eyebrow: "经过 Longbridge 生产验证",
               title: "构建出色的高性能桌面应用。",
-              lead: "一个综合性的 Rust 桌面开发框架，集完整 UI 系统、数据表格、Dock 布局、图表与代码编辑器于一体；从第一天起用于构建 Longbridge Pro。",
+              lead: "一个综合性的 Rust 桌面开发框架，集完整 UI 系统、数据表格、Dock 布局、图表与代码编辑器于一体，并可用 JavaScript 扩展；从第一天起用于构建 Longbridge Pro。",
               componentsAction: "浏览组件",
               baseAction: "探索 gpui-base",
               signalStars: "GitHub stars",
@@ -559,10 +573,10 @@ const copy = computed(() =>
                       apis: ["Theme", "ThemeColor", "ActiveTheme"],
                   },
               ],
-              chooseKicker: "两层架构，一个生态",
+              chooseKicker: "三个层次，一个生态",
               chooseTitle: "决定由谁掌控视觉系统。",
               chooseDescription:
-                  "使用 gpui-component 保持统一风格，或基于 gpui-base 构建并拥有自己的设计系统。",
+                  "使用 gpui-component 保持统一风格，基于 gpui-base 构建自己的设计系统，或用 gpui-shell 让应用可以被 JavaScript 扩展。",
               shipTitle: "保持风格统一",
               shipDescription:
                   "gpui-component 提供完整、成熟且开箱即用的视觉与交互系统。",
@@ -581,6 +595,15 @@ const copy = computed(() =>
                   "视觉表达 100% 自主",
               ],
               startBase: "阅读 gpui-base 文档",
+              scriptTitle: "用 JavaScript 扩展应用",
+              scriptDescription:
+                  "宿主仍然是 Rust，扩展是 JavaScript：脚本能碰到什么由宿主逐项授予，界面则在同一个进程里画出来。",
+              scriptPoints: [
+                  "扩展产品不必 fork，也不必发新版本",
+                  "默认不授予任何系统能力",
+                  "保存文件即 hot-reload，无需重启",
+              ],
+              startShell: "了解 gpui-shell",
               principleKicker: "设计原则",
               principleLead: "行为属于基础层。",
               principleTail: "视觉属于应用。",
@@ -600,9 +623,9 @@ const copy = computed(() =>
               themeNav: "Toggle color theme",
               menuNav: "Open menu",
               copyLabel: "Copy install command",
-              eyebrow: "Built on GPUI. Proven at Longbridge.",
+              eyebrow: "Proven in production at Longbridge.",
               title: "Build fantastic, high-performance desktop apps.",
-              lead: "A comprehensive Rust desktop framework with a complete UI system, data tables, docking, charts, and a code editor — used to build Longbridge Pro from day one.",
+              lead: "A comprehensive Rust desktop framework with a complete UI system, data tables, docking, charts, and a code editor — extensible in JavaScript, and used to build Longbridge Pro from day one.",
               componentsAction: "Browse components",
               baseAction: "Explore gpui-base",
               signalStars: "stars on GitHub",
@@ -656,10 +679,10 @@ const copy = computed(() =>
                       apis: ["Theme", "ThemeColor", "ActiveTheme"],
                   },
               ],
-              chooseKicker: "Two layers. One ecosystem.",
+              chooseKicker: "Three layers. One ecosystem.",
               chooseTitle: "Choose who owns the visual system.",
               chooseDescription:
-                  "Use gpui-component for a coherent product, or build and own your design system on gpui-base.",
+                  "Use gpui-component for a coherent product, build and own your design system on gpui-base, or open the application to JavaScript extensions with gpui-shell.",
               shipTitle: "Keep the product coherent",
               shipDescription:
                   "gpui-component provides a complete, polished visual and interaction system ready to ship.",
@@ -678,6 +701,15 @@ const copy = computed(() =>
                   "100% visual ownership",
               ],
               startBase: "Read the gpui-base docs",
+              scriptTitle: "Extend it in JavaScript",
+              scriptDescription:
+                  "The host stays Rust and grants what a script may reach, one capability at a time; the script draws real interface in the same process.",
+              scriptPoints: [
+                  "Extend the product without a fork or a release",
+                  "No capability granted by default",
+                  "Hot-reload on save, no restart",
+              ],
+              startShell: "Explore gpui-shell",
               principleKicker: "Principle",
               principleLead: "Behavior belongs to the foundation.",
               principleTail: "Presentation belongs to the application.",
@@ -1522,7 +1554,7 @@ html[lang^="zh"] .section-kicker {
 
 .paths__grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 1.25rem;
 }
 
@@ -1759,6 +1791,12 @@ html[lang^="zh"] .section-kicker {
     }
 
     .caps__grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 1180px) {
+    .paths__grid {
         grid-template-columns: repeat(2, 1fr);
     }
 }

@@ -164,6 +164,15 @@ impl DisplayMap {
         self.fold_map.folded_ranges()
     }
 
+    /// Every range that *can* be folded, whether it is folded or not.
+    ///
+    /// What "fold everything" needs: the folded ranges alone say what is
+    /// already closed, never what is left to close.
+    #[inline]
+    pub fn fold_candidates(&self) -> &[FoldRange] {
+        self.fold_map.fold_candidates()
+    }
+
     /// Clear all folds
     pub fn clear_folds(&mut self) {
         self.fold_map.clear_folds();
@@ -278,6 +287,19 @@ impl DisplayMap {
     #[inline]
     pub(crate) fn offset_to_wrap_display_point(&self, offset: usize) -> WrapDisplayPoint {
         self.wrap_map.wrapper().offset_to_display_point(offset)
+    }
+
+    /// Like [`Self::offset_to_wrap_display_point`], but honours the caret's line-end affinity so
+    /// an offset on a soft wrap boundary resolves to the row the caret is drawn on.
+    #[inline]
+    pub(crate) fn offset_to_wrap_display_point_with_affinity(
+        &self,
+        offset: usize,
+        line_end_affinity: bool,
+    ) -> WrapDisplayPoint {
+        self.wrap_map
+            .wrapper()
+            .offset_to_display_point_with_affinity(offset, line_end_affinity)
     }
 
     /// Convert wrap display point to byte offset.

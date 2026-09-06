@@ -1,5 +1,4 @@
-use gpui::{prelude::*, *};
-use gpui_component::{
+use gpui_kit::component::{
     Icon, IconName, ThemeStyled as _,
     button::{Button, ButtonVariants as _},
     command::{CommandEntry, CommandItem},
@@ -11,7 +10,6 @@ use gpui_component::{
     status_bar::StatusBar,
     v_flex,
 };
-
 use crate::*;
 
 fn component_command(name: impl Into<SharedString>) -> CommandEntry {
@@ -70,9 +68,11 @@ impl Gallery {
                 StoryContainer::panel::<AccordionStory>(window, cx),
                 StoryContainer::panel::<AlertStory>(window, cx),
                 StoryContainer::panel::<AlertDialogStory>(window, cx),
+                StoryContainer::panel::<AttachmentStory>(window, cx),
                 StoryContainer::panel::<AvatarStory>(window, cx),
                 StoryContainer::panel::<BadgeStory>(window, cx),
                 StoryContainer::panel::<BreadcrumbStory>(window, cx),
+                StoryContainer::panel::<BubbleStory>(window, cx),
                 StoryContainer::panel::<ButtonStory>(window, cx),
                 StoryContainer::panel::<CalendarStory>(window, cx),
                 StoryContainer::panel::<ChartStory>(window, cx),
@@ -99,6 +99,9 @@ impl Gallery {
                 StoryContainer::panel::<LabelStory>(window, cx),
                 StoryContainer::panel::<ListStory>(window, cx),
                 StoryContainer::panel::<MenuStory>(window, cx),
+                StoryContainer::panel::<MarkerStory>(window, cx),
+                StoryContainer::panel::<MessageStory>(window, cx),
+                StoryContainer::panel::<MessageScrollerStory>(window, cx),
                 StoryContainer::panel::<NativeMenuStory>(window, cx),
                 StoryContainer::panel::<NotificationStory>(window, cx),
                 StoryContainer::panel::<NumberInputStory>(window, cx),
@@ -113,7 +116,10 @@ impl Gallery {
                 StoryContainer::panel::<SelectStory>(window, cx),
                 StoryContainer::panel::<SeparatorStory>(window, cx),
                 StoryContainer::panel::<SettingsStory>(window, cx),
+                #[cfg(not(target_family = "wasm"))]
+                StoryContainer::panel::<ShellStory>(window, cx),
                 StoryContainer::panel::<SheetStory>(window, cx),
+                StoryContainer::panel::<ShimmerStory>(window, cx),
                 StoryContainer::panel::<SidebarStory>(window, cx),
                 StoryContainer::panel::<SkeletonStory>(window, cx),
                 StoryContainer::panel::<SliderStory>(window, cx),
@@ -214,7 +220,7 @@ impl Gallery {
 
     pub(crate) fn select_story_index(
         &mut self,
-        index: gpui_component::IndexPath,
+        index: gpui_kit::component::IndexPath,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -441,7 +447,7 @@ impl Render for Gallery {
                             .icon(IconName::Github)
                             .tooltip("GPUI Component GitHub repository")
                             .on_click(|_, _, cx| {
-                                cx.open_url("https://github.com/longbridge/gpui-component")
+                                cx.open_url("https://github.com/longbridge/gpui-kit")
                             }),
                     ),
             )
@@ -452,7 +458,7 @@ impl Render for Gallery {
 #[cfg(test)]
 mod tests {
     use super::{component_command, find_story_index};
-    use gpui_component::command::CommandEntry;
+    use gpui_kit::component::command::CommandEntry;
 
     #[test]
     fn component_command_uses_story_name() {

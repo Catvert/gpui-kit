@@ -220,10 +220,88 @@ impl DockPlacement {
     }
 }
 
+/// The regions a panel is allowed to be docked in.
+///
+/// A panel is at home anywhere, and [`ALL`](Self::ALL) is what one says by
+/// saying nothing. What this exists for is the application whose centre means
+/// something: the documents one reads, as against the tool windows one picks
+/// from. Such an application had no way to say so — a drag lands wherever it
+/// is let go, so a tool window could be dropped into the centre, where it
+/// becomes a document with no rail button and no way back to its edge.
+///
+/// A set and not one placement: what belongs to the edges belongs to all three
+/// of them, and refusing the centre is refusing one region out of four.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DockRegions(u8);
+
+impl DockRegions {
+    /// Anywhere the dock has a region: the default, and what every panel that
+    /// does not care answers.
+    pub const ALL: Self = Self(0b1111);
+
+    /// The three edges, and not the centre — a tool window.
+    pub const EDGES: Self = Self::ALL.without(DockPlacement::Center);
+
+    /// The centre alone — a document.
+    pub const CENTER: Self = Self(Self::bit(DockPlacement::Center));
+
+    const fn bit(placement: DockPlacement) -> u8 {
+        match placement {
+            DockPlacement::Center => 0b0001,
+            DockPlacement::Left => 0b0010,
+            DockPlacement::Right => 0b0100,
+            DockPlacement::Bottom => 0b1000,
+        }
+    }
+
+    /// The same set with one region taken out.
+    pub const fn without(self, placement: DockPlacement) -> Self {
+        Self(self.0 & !Self::bit(placement))
+    }
+
+    /// Whether a panel carrying this set may be dropped into `placement`.
+    pub const fn allows(self, placement: DockPlacement) -> bool {
+        self.0 & Self::bit(placement) != 0
+    }
+}
+
+impl Default for DockRegions {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use gpui::px;
+
+    /// The two sets an application actually names are complements of each
+    /// other, and the default is everything: a panel that says nothing is a
+    /// panel a drag may put anywhere, which is what the dock did before there
+    /// was anything to say.
+    #[test]
+    fn the_regions_a_panel_names_are_the_ones_it_accepts() {
+        const EVERY: [DockPlacement; 4] = [
+            DockPlacement::Center,
+            DockPlacement::Left,
+            DockPlacement::Right,
+            DockPlacement::Bottom,
+        ];
+        for placement in EVERY {
+            assert!(DockRegions::default().allows(placement), "{placement:?}");
+            assert_eq!(
+                DockRegions::EDGES.allows(placement),
+                placement != DockPlacement::Center,
+                "{placement:?}"
+            );
+            assert_eq!(
+                DockRegions::CENTER.allows(placement),
+                placement == DockPlacement::Center,
+                "{placement:?}"
+            );
+        }
+    }
 
     /// The whole of a real user's file, not just its outline: every dock and
     /// the nesting under each one. Ported from the old

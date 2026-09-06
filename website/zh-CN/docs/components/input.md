@@ -10,7 +10,7 @@ Input 是一个单行文本输入组件，支持校验、输入掩码、前后�
 ## 导入
 
 ```rust
-use gpui_component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputState};
 ```
 
 ## 用法
@@ -55,7 +55,7 @@ Input::new(&input)
 ### 前缀和后缀
 
 ```rust
-use gpui_component::{Icon, IconName};
+use gpui_kit::component::{Icon, IconName};
 
 Input::new(&input)
     .prefix(Icon::new(IconName::Search).small())
@@ -86,6 +86,11 @@ Input::new(&input)
     .content_type(InputContentType::Password)
     .mask_toggle()
 ```
+
+掩码状态下，输入框不会让明文进入剪贴板，也不会通过选区暴露内容：Copy 和 Cut
+不执行任何操作（上下文菜单中同样置灰），按词删除会删掉光标之前的全部内容，双击
+则选中整个值而不是其中一个词。Paste 和 Select All 不受影响，通过 `mask_toggle`
+显示明文后，上述操作全部恢复。
 
 ### 尺寸
 
@@ -147,7 +152,7 @@ let input = cx.new(|cx|
         .mask_pattern("AAA-###-AAA")
 );
 
-use gpui_component::input::MaskPattern;
+use gpui_kit::component::input::MaskPattern;
 
 let input = cx.new(|cx|
     InputState::new(window, cx)

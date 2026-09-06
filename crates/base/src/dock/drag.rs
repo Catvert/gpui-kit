@@ -2,7 +2,7 @@
 //!
 //! This module decides *where* a drop would land and what shape a hovering
 //! drag session occupies. It draws nothing: the styled drag preview and the
-//! rendered drop indicator are appearance and live in `crates/ui`.
+//! rendered drop indicator are appearance and live in `crates/component`.
 
 use std::{
     any::Any,
@@ -21,6 +21,7 @@ use gpui::{
 use crate::Placement;
 
 use super::layout::{NodeId, PanelId};
+use super::state::{DockPlacement, DockRegions};
 
 /// A panel being dragged out of a tab group.
 ///
@@ -34,6 +35,7 @@ use super::layout::{NodeId, PanelId};
 pub struct DragPanel {
     panel: PanelId,
     source: NodeId,
+    regions: DockRegions,
     drag_offset: Rc<Cell<Point<Pixels>>>,
     preview_size: Rc<Cell<Size<Pixels>>>,
     drag_session_id: u64,
@@ -51,10 +53,28 @@ impl DragPanel {
         Self {
             panel,
             source,
+            regions: DockRegions::ALL,
             drag_offset: Rc::new(Cell::new(Point::default())),
             preview_size: Rc::new(Cell::new(Size::default())),
             drag_session_id: NEXT_DRAG_SESSION_ID.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    /// The regions this panel accepts, read off it when the drag begins.
+    ///
+    /// Carried on the drag rather than looked up at the drop, and that is the
+    /// point: the group the pointer is over holds its **own** panels, and the
+    /// one being dragged comes from somewhere else — resolving the id would
+    /// mean reaching back through the dock area, which a group has no handle
+    /// on. A drag is one gesture, so one reading of what it carries is enough.
+    pub fn allowing(mut self, regions: DockRegions) -> Self {
+        self.regions = regions;
+        self
+    }
+
+    /// Whether letting go over `placement` would land anywhere.
+    pub fn accepts(&self, placement: DockPlacement) -> bool {
+        self.regions.allows(placement)
     }
 
     pub fn panel(&self) -> PanelId {
@@ -98,7 +118,7 @@ impl DragPanel {
 
 impl Render for DragPanel {
     /// Base draws nothing: the styled drag preview is appearance and belongs
-    /// to `crates/ui`, which reintroduces it as a separate render type.
+    /// to `crates/component`, which reintroduces it as a separate render type.
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         Empty
     }

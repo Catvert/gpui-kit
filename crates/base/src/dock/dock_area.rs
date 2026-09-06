@@ -111,6 +111,11 @@ struct Cached<T> {
 struct CachedSplit {
     entity: Entity<ResizableState>,
     children: Vec<NodeId>,
+    /// The tree sizes the state last adopted. A reconcile that finds them
+    /// unchanged leaves the state alone: re-adopting a `None` un-pins the
+    /// measurement the layout pass resolved it to, and the split re-flexes
+    /// although the edit never touched it.
+    sizes: Vec<Option<Pixels>>,
     _subscription: Subscription,
 }
 
@@ -377,8 +382,13 @@ impl DockArea {
         cx: &mut Context<Self>,
     ) {
         if let Some(pane) = self.docks.get_mut(&placement) {
+            let previous = pane.dock.size();
             pane.dock.set_size(size);
+            if pane.dock.size() == previous {
+                return;
+            }
             cx.notify();
+            cx.emit(DockEvent::LayoutChanged);
         }
     }
 }
@@ -588,6 +598,16 @@ impl DockArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A panel this area has no view for is not one it can hold. Two areas
+        // can be on screen at once — one per project, say — and a tab dragged
+        // from one into the other arrives here as an id this area has never
+        // registered: inserting it puts a panel in a tree that cannot render
+        // it, which is `views_of`'s assertion in debug and a group whose active
+        // index has silently shifted in release. Refusing is also the answer a
+        // drop that cannot land should give: the tab stays where it was.
+        if !self.panels.contains_key(&panel) {
+            return;
+        }
         let Some(destination) = self.placement_of_node(target_node(&target)) else {
             return;
         };
@@ -983,9 +1003,35 @@ impl DockArea {
         // Planned first, applied second: the plan borrows the trees, and
         // applying it needs `&mut self` to fill the caches.
         let mut plans = Vec::new();
-        plan_tree(&self.center, false, self.locked, &mut plans);
-        for pane in self.docks.values() {
-            plan_tree(&pane.tree, !pane.dock.is_open(), self.locked, &mut plans);
+        // What "alone" guards is the dock being emptied, and the dock is the
+        // whole area — not one tree of it. Counted across the centre and every
+        // dock, so a lone panel in a side region can be dragged into the
+        // centre: that leaves its region empty, which is what closing a region
+        // *is*, and the area still has somewhere to drop it back.
+        let groups = tab_groups(&self.center)
+            + self
+                .docks
+                .values()
+                .map(|pane| tab_groups(&pane.tree))
+                .sum::<usize>();
+        let alone = groups <= 1;
+        plan_tree(
+            &self.center,
+            DockPlacement::Center,
+            alone,
+            false,
+            self.locked,
+            &mut plans,
+        );
+        for (placement, pane) in self.docks.iter() {
+            plan_tree(
+                &pane.tree,
+                *placement,
+                alone,
+                !pane.dock.is_open(),
+                self.locked,
+                &mut plans,
+            );
         }
 
         // Sets rather than vectors: these are membership tests, run once per
@@ -1004,22 +1050,43 @@ impl DockArea {
                     sizes,
                 } => {
                     let state = self.split_entity(node, cx);
-                    let previous = self
+                    let (previous, adopted) = self
                         .splits
                         .get(&node)
-                        .map(|cached| cached.children.clone())
+                        .map(|cached| (cached.children.clone(), cached.sizes.clone()))
                         .unwrap_or_default();
-                    state.update(cx, |state, cx| {
-                        sync_split_panels(state, &previous, &children, &sizes, cx);
-                        state.sync_panels_count(axis, children.len(), cx);
-                        // The tree is authoritative on how space divides, so
-                        // its sizes land last — `insert_panel` renormalizes
-                        // everything it touches, which would otherwise undo
-                        // the share an edit just decided.
-                        state.adopt_sizes(&sizes, cx);
-                    });
+                    // Only a split the edit changed is handed anything. The
+                    // state of every other split may legitimately disagree
+                    // with its tree — a window resize rescales it silently —
+                    // and pushing the tree's sizes back would move slots the
+                    // edit never named. For a slot the tree leaves `None`, it
+                    // would also un-pin the measurement the first layout pass
+                    // resolved it to, and the whole split re-flexes.
+                    if previous != children || adopted != sizes {
+                        state.update(cx, |state, cx| {
+                            sync_split_panels(state, &previous, &children, &sizes, cx);
+                            state.sync_panels_count(axis, children.len(), cx);
+                            // The tree is authoritative on how space divides,
+                            // so its sizes land last — `insert_panel`
+                            // renormalizes everything it touches, which would
+                            // otherwise undo the share an edit just decided.
+                            //
+                            // What the tree decides is the *share*, not the
+                            // pixel count. The file holds absolute pixels
+                            // measured in whatever window last saved it, so
+                            // restoring into a different one leaves their
+                            // total off the container — and
+                            // `adjust_to_container_size` rescales the state to
+                            // the container on the very next pass. Adopting
+                            // the raw numbers would re-assert the stale total,
+                            // so hand over the share instead and both sides
+                            // already agree.
+                            state.adopt_sizes(&scale_sizes_to(state.container_size(), &sizes), cx);
+                        });
+                    }
                     if let Some(cached) = self.splits.get_mut(&node) {
                         cached.children = children;
+                        cached.sizes = sizes;
                     }
                 }
                 ContainerPlan::Group {
@@ -1183,8 +1250,13 @@ impl DockArea {
                 let Some(tree) = this.tree_mut(region) else {
                     return;
                 };
-                if tree.set_sizes(node, sizes).changed() {
+                if tree.set_sizes(node, sizes.clone()).changed() {
                     cx.emit(DockEvent::LayoutChanged);
+                }
+                // The state is where these came from, so the next reconcile
+                // has nothing to hand it.
+                if let Some(cached) = this.splits.get_mut(&node) {
+                    cached.sizes = sizes;
                 }
             });
         self.splits.insert(
@@ -1192,6 +1264,7 @@ impl DockArea {
             CachedSplit {
                 entity: entity.clone(),
                 children: Vec::new(),
+                sizes: Vec::new(),
                 _subscription: subscription,
             },
         );
@@ -1404,8 +1477,24 @@ impl DockArea {
                 // actually drawn. A hidden slot renders nothing and grows
                 // nothing, so making it the flexible one leaves every drawn
                 // slot rigid and the split ends short of its container — the
-                // empty strip this picks the *last shown* slot to avoid.
-                let grows = shown.iter().rposition(|shown| *shown);
+                // empty strip this picks a *shown* slot to avoid.
+                //
+                // And an **unconstrained** one where there is one: the last
+                // slot is very often the one a caller has just pinned — a
+                // panel split off with a size of its own — and handing the
+                // growth to it is handing it everything the split has over,
+                // so the 260px it asked for is drawn at whatever half the
+                // container happens to be. A slot nobody sized is exactly the
+                // slot whose business it is to take the leftover.
+                let grows = sizes
+                    .iter()
+                    .enumerate()
+                    .rposition(|(ix, size)| shown[ix] && size.is_none())
+                    .or_else(|| shown.iter().rposition(|shown| *shown));
+                let gap = self.renderer.split_gap(cx);
+                // The gap goes before every shown slot but the first shown
+                // one: a hidden slot must not leave a double band behind it.
+                let first_shown = shown.iter().position(|shown| *shown);
                 let panels: Vec<_> = children
                     .iter()
                     .zip(sizes.iter())
@@ -1413,6 +1502,13 @@ impl DockArea {
                     .map(|(ix, (child, size))| {
                         resizable_panel()
                             .visible(shown[ix])
+                            .when(
+                                gap > px(0.) && Some(ix) != first_shown,
+                                |panel| match axis {
+                                    Axis::Horizontal => panel.pl(gap),
+                                    Axis::Vertical => panel.pt(gap),
+                                },
+                            )
                             .child(self.render_node(child, window, cx))
                             // `flex_none` is what makes the size stick.
                             // `ResizablePanel` sets `flex_grow: 1` on itself,
@@ -1447,6 +1543,17 @@ impl DockArea {
 
                 self.renderer
                     .split_frame(node.id(), axis, window, cx)
+                    // A split frame with no size collapses: base puts it
+                    // between a `resizable_panel` and the resizable group, and
+                    // between `center_frame` and the centre's root split, and
+                    // neither parent sizes it. `size_full` and `flex_1` are
+                    // belt and braces -- either alone passes every case I could
+                    // construct, so this does not depend on which one wins in a
+                    // given parent.
+                    .size_full()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_hidden()
                     .child(group)
                     .into_any_element()
             }
@@ -1486,9 +1593,49 @@ impl DockArea {
         cx: &mut App,
     ) -> Option<AnyElement> {
         let pane = self.docks.get(&placement)?;
-        let content = self.render_node(pane.tree.root(), window, cx);
+        // A region with nothing to draw draws nothing at all — frame, resize
+        // handle and reserved width included. Emptying a side region *is*
+        // closing it (see `alone` in `reconcile`), and a dock that kept its
+        // width around an empty group left a dead band down the side of the
+        // window: the panel had moved, and the place it left behind had not.
+        // Hiding the region's last visible panel says the same thing, which is
+        // the question `is_empty` answers.
+        if !self.is_node_visible(pane.tree.root(), cx) {
+            return None;
+        }
         let dock = self.dock_context(placement, &pane.dock);
-        Some(self.renderer.render_dock(&dock, content, window, cx))
+
+        // A closed left or right dock takes no space at all; a closed bottom
+        // dock keeps a strip so its tab bar stays clickable. Nothing is drawn
+        // for a dock with no extent, and the renderer is not asked for chrome
+        // nobody can see.
+        let size = dock_extent(&dock);
+        if size <= px(0.) {
+            return Some(div().into_any_element());
+        }
+
+        // **The clip is around the content and not around the dock.** It was
+        // on the frame below, and it took the resize handle with it: a handle
+        // is positioned against the dock's edge, and the seam one aims at is
+        // the gutter *outside* that edge, so a handle reaching for it was cut
+        // off at the very boundary it exists to straddle. The panes still need
+        // clipping — a group narrower than its content spills — so the clip
+        // moves in by one level, which is exactly as far as it has to go.
+        let content = div()
+            .size_full()
+            .overflow_hidden()
+            .child(self.render_node(pane.tree.root(), window, cx))
+            .into_any_element();
+        // The box is applied here rather than left to the renderer, and that is
+        // the whole point of it being here. A dock's extent along its own axis
+        // is not presentation -- it is what makes the dock a column beside the
+        // centre instead of a block in the flow below it -- and a renderer that
+        // did not know to state it produced a dock with no width, every pane
+        // inside it shrunk to its content. `render_dock` on the renderer is a
+        // chrome hook, so a renderer that draws nothing at all still gets a
+        // dock that is the right shape.
+        let chrome = self.renderer.render_dock(&dock, content, window, cx);
+        Some(dock_frame(&dock, size).child(chrome).into_any_element())
     }
 
     fn dock_context(&self, placement: DockPlacement, dock: &Dock) -> DockContext {
@@ -1527,6 +1674,17 @@ impl Render for DockArea {
 
         renderer
             .frame(window, cx)
+            // Structure, applied after the hook and not inside it. A dock area
+            // lays its left dock, centre and right dock out in a row; a frame
+            // that is not one stacks them down the window instead, which is
+            // what every renderer that is not `DockSkin` used to get, because
+            // the row lived in `DockSkin`'s override of this hook and the trait
+            // default is a bare `div`.
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .flex()
+            .flex_row()
             .on_prepaint(move |bounds, _, cx| {
                 area.update(cx, |area, _| area.bounds = bounds);
             })
@@ -1541,6 +1699,14 @@ impl Render for DockArea {
                     .child(
                         renderer
                             .center_frame(window, cx)
+                            // Same reason as the frame above: the centre is
+                            // whatever the side docks leave, in a column with
+                            // the bottom dock. Without this it is neither, and
+                            // shrinks to its content.
+                            .flex()
+                            .flex_1()
+                            .flex_col()
+                            .overflow_hidden()
                             .child(self.render_node(self.center.root(), window, cx))
                             .when_some(
                                 self.render_dock(DockPlacement::Bottom, window, cx),
@@ -1581,6 +1747,25 @@ impl ContainerPlan {
             Self::Split { node, .. } | Self::Group { node, .. } | Self::Tiles { node, .. } => *node,
         }
     }
+}
+
+/// Re-express slot sizes as shares of `container`, keeping their proportions.
+///
+/// Returns them unchanged unless every slot is constrained and both the
+/// container and the recorded total are usable: an unconstrained slot is laid
+/// out by flex and takes the leftover, so scaling only the constrained ones
+/// would move a divider nothing asked to move.
+fn scale_sizes_to(container: Pixels, sizes: &[Option<Pixels>]) -> Vec<Option<Pixels>> {
+    let total: f32 = sizes.iter().flatten().map(|size| size.as_f32()).sum();
+    if container <= px(0.) || total <= 0. || sizes.iter().any(Option::is_none) {
+        return sizes.to_vec();
+    }
+
+    let scale = container.as_f32() / total;
+    sizes
+        .iter()
+        .map(|size| size.map(|size| px(size.as_f32() * scale)))
+        .collect()
 }
 
 /// Bring one split's `ResizableState` panel list from `previous` to `next`,
@@ -1631,13 +1816,32 @@ fn sync_split_panels(
     );
 }
 
-fn plan_tree(tree: &PaneTree, collapsed: bool, locked: bool, out: &mut Vec<ContainerPlan>) {
-    // The root has nothing beside it by definition.
-    plan_node(tree.root(), true, collapsed, locked, out);
+/// How many tab groups a tree holds, however deeply split.
+fn tab_groups(tree: &PaneTree) -> usize {
+    fn walk(node: &PaneNode) -> usize {
+        match node.kind() {
+            PaneRef::Tabs { .. } => 1,
+            PaneRef::Split { children, .. } => children.iter().map(walk).sum(),
+            PaneRef::Tiles { .. } => 0,
+        }
+    }
+    walk(tree.root())
+}
+
+fn plan_tree(
+    tree: &PaneTree,
+    placement: DockPlacement,
+    alone: bool,
+    collapsed: bool,
+    locked: bool,
+    out: &mut Vec<ContainerPlan>,
+) {
+    plan_node(tree.root(), placement, alone, collapsed, locked, out);
 }
 
 fn plan_node(
     node: &PaneNode,
+    placement: DockPlacement,
     alone: bool,
     collapsed: bool,
     locked: bool,
@@ -1655,9 +1859,11 @@ fn plan_node(
                 children: children.iter().map(PaneNode::id).collect(),
                 sizes: sizes.to_vec(),
             });
-            let children_alone = children.len() <= 1;
+            // Passed down unchanged: whether a group may be moved is a fact
+            // about the whole dock area, decided once by its caller, and not
+            // about how many siblings this particular split happens to hold.
             for child in children {
-                plan_node(child, children_alone, collapsed, locked, out);
+                plan_node(child, placement, alone, collapsed, locked, out);
             }
         }
         PaneRef::Tabs { panels, active_ix } => out.push(ContainerPlan::Group {
@@ -1666,7 +1872,11 @@ fn plan_node(
             active_ix,
             constraints: TabGroupConstraints::in_split(alone)
                 .dock_locked(locked)
-                .collapsed(collapsed),
+                .collapsed(collapsed)
+                // The region travels with the rest of what a container decides
+                // about a group: a skin cannot work it out — the trees are
+                // ours — and the chrome an edge wants is not the centre's.
+                .placement(placement),
         }),
         PaneRef::Tiles { panels } => out.push(ContainerPlan::Tiles {
             node: node.id(),
@@ -1821,6 +2031,43 @@ impl DockContext {
     }
 }
 
+/// A closed bottom dock keeps this much, so its tab bar stays clickable. A
+/// closed side dock keeps nothing: there is no tab bar left to click at zero
+/// width, and reopening it is the application's to offer.
+pub const CLOSED_BOTTOM_STRIP: Pixels = px(29.);
+
+/// How much room a dock asks for along its own axis.
+pub fn dock_extent(dock: &DockContext) -> Pixels {
+    match (dock.is_open(), dock.placement()) {
+        (true, _) => dock.size(),
+        (false, DockPlacement::Bottom) => CLOSED_BOTTOM_STRIP,
+        (false, _) => px(0.),
+    }
+}
+
+/// The box a dock occupies: its extent along its own axis, full across, and
+/// held at that size rather than stretched by the row it sits in.
+///
+/// **Not clipped.** The panes inside are — see [`DockArea::render_dock`] — and
+/// that is where the clip belongs: a resize handle is the one thing in here
+/// that has business outside the box, the seam it is aimed at being the gutter
+/// beyond the edge.
+///
+/// Structural, not decorative, which is why it is built here and not in a
+/// renderer. See [`DockArea::render_dock`].
+pub fn dock_frame(dock: &DockContext, size: Pixels) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .relative()
+        .map(|this| match dock.placement() {
+            DockPlacement::Left | DockPlacement::Right => this.flex_row().h_full().w(size),
+            DockPlacement::Bottom => this.w_full().h(size),
+            // Base never builds a dock for the centre.
+            DockPlacement::Center => this,
+        })
+}
+
 /// Appearance for the dock area. Base draws none of it.
 ///
 /// The frame hooks return the element itself rather than wrapping one, for the
@@ -1834,6 +2081,10 @@ impl DockContext {
 #[allow(unused_variables)]
 pub trait DockAreaRenderer: 'static {
     /// The area's outer frame, which base records its bounds on.
+    /// Appearance only. The area is laid out as a row around whatever this
+    /// returns, because that is what makes a dock a column beside the centre
+    /// rather than a block above it, and a renderer cannot be expected to know
+    /// it had a row to declare.
     fn frame(&self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
         div().id("dock-area")
     }
@@ -1857,7 +2108,18 @@ pub trait DockAreaRenderer: 'static {
         div().id(("dock-split-frame", node.as_u64()))
     }
 
+    /// Space between a split's slots, shown as the split frame's background.
+    ///
+    /// Taken as padding inside every slot but the first, so the sizes the
+    /// resize machinery distributes still sum to the container.
+    fn split_gap(&self, cx: &App) -> Pixels {
+        let _ = cx;
+        px(0.)
+    }
+
     /// The column holding the center region and the bottom dock.
+    /// Appearance only; see [`DockAreaRenderer::frame`]. The centre fills what
+    /// the side docks leave and stacks with the bottom dock either way.
     fn center_frame(&self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
         div().id("dock-area-center")
     }
@@ -1879,6 +2141,12 @@ pub trait DockAreaRenderer: 'static {
 
     /// One dock's chrome around its content: the title strip, the collapse
     /// affordance, and the resize handle.
+    ///
+    /// Chrome only. The dock's own box -- its extent along its own axis, and
+    /// the `flex_none` that holds it there -- is applied by
+    /// [`DockArea::render_dock`] around whatever this returns, so a renderer
+    /// cannot misplace a dock by not knowing to size it, and the default here
+    /// can be what it is: the content, undecorated.
     fn render_dock(
         &self,
         dock: &DockContext,
@@ -1963,17 +2231,86 @@ impl DockArea {
 mod tests {
     use gpui::{TestAppContext, VisualTestContext};
 
-    use std::cell::RefCell;
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     use super::*;
     use crate::dock::test_support::{Log, PanelSignal, TestPanel, drain, drain_active, log_of};
     use crate::dock::{TabGroupContext, TileContext};
+
+    /// The file holds pixels measured in whatever window last saved it, so its
+    /// total is off the container the layout is restored into.
+    #[test]
+    fn slot_sizes_are_re_expressed_as_shares_of_the_container() {
+        let scaled = scale_sizes_to(px(800.), &[Some(px(300.)), Some(px(100.))]);
+
+        assert_eq!(scaled, vec![Some(px(600.)), Some(px(200.))]);
+    }
+
+    /// An unconstrained slot is laid out by flex and takes the leftover, so
+    /// scaling only its siblings would move a divider nothing asked to move.
+    #[test]
+    fn an_unconstrained_slot_leaves_every_size_alone() {
+        let sizes = [Some(px(300.)), None];
+
+        assert_eq!(scale_sizes_to(px(800.), &sizes), sizes.to_vec());
+    }
+
+    /// Nothing to scale against before the first layout pass, or when the
+    /// recorded sizes carry no length at all.
+    #[test]
+    fn an_unusable_container_or_total_leaves_every_size_alone() {
+        let sizes = [Some(px(300.)), Some(px(100.))];
+        assert_eq!(scale_sizes_to(px(0.), &sizes), sizes.to_vec());
+
+        let zeroed = [Some(px(0.)), Some(px(0.))];
+        assert_eq!(scale_sizes_to(px(800.), &zeroed), zeroed.to_vec());
+    }
 
     fn setup(cx: &mut TestAppContext) -> (Entity<DockArea>, &mut VisualTestContext) {
         cx.update(|cx| {
             let _ = crate::Theme::global_mut(cx);
         });
         cx.add_window_view(|window, cx| DockArea::new("test-dock", None, window, cx))
+    }
+
+    #[gpui::test]
+    fn dock_size_change_emits_one_layout_event(cx: &mut TestAppContext) {
+        let (area, cx) = setup(cx);
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.set_dock(
+                    DockPlacement::Left,
+                    DockLayout::tabs().panel(TestPanel::new("Left", cx)),
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        let events = Rc::new(Cell::new(0));
+        let observed = events.clone();
+        let _subscription = cx.update(|window, cx| {
+            window.subscribe(&area, cx, move |_, event: &DockEvent, _, _| {
+                if matches!(event, DockEvent::LayoutChanged) {
+                    observed.set(observed.get() + 1);
+                }
+            })
+        });
+
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.set_dock_size(DockPlacement::Left, px(320.), window, cx);
+                area.set_dock_size(DockPlacement::Left, px(320.), window, cx);
+            });
+        });
+        assert_eq!(
+            events.get(),
+            1,
+            "only an effective size change is persisted"
+        );
     }
 
     /// Two tab groups side by side, holding one logging panel each.
@@ -2002,6 +2339,71 @@ mod tests {
             alpha
         });
         (area, alpha, cx)
+    }
+
+    /// A tab dragged from one dock area into another is refused.
+    ///
+    /// Two areas can be on screen at once — Claudhub's multiplexer paints one
+    /// per project — and a foreign panel used to be inserted into a tree that
+    /// has no view for it: the assertion in `views_of`, which fires during the
+    /// reconcile the insert triggers, so before anything is even painted.
+    ///
+    /// The target is the **tab group**, not the centre's root: an insert whose
+    /// node is not a group of tabs is a no-op for a reason of its own, and a
+    /// test aiming there would pass without proving anything. That is exactly
+    /// how this one first passed against the bug it was written for.
+    #[gpui::test]
+    fn a_panel_from_another_area_is_refused(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (mine, alpha, cx) = two_groups(&log, cx);
+        let theirs = cx.update(|window, cx| {
+            let area = cx.new(|cx| DockArea::new("other-dock", None, window, cx));
+            let beta = TestPanel::new("Beta", cx);
+            area.update(cx, |area, cx| {
+                area.set_center(DockLayout::tabs().panel(beta), window, cx);
+            });
+            area
+        });
+        let theirs_group = cx.read(|cx| {
+            let tree = theirs.read(cx).layout(DockPlacement::Center).unwrap();
+            tree.find_panel_node(tree.panels().next().unwrap()).unwrap()
+        });
+        let stranger = panel_id_of(&alpha);
+
+        cx.update(|window, cx| {
+            theirs.update(cx, |area, cx| {
+                area.move_panel(
+                    stranger,
+                    InsertTarget::Tabs {
+                        node: theirs_group,
+                        ix: None,
+                        activate: true,
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        assert!(
+            cx.read(|cx| theirs
+                .read(cx)
+                .layout(DockPlacement::Center)
+                .unwrap()
+                .find_panel_node(stranger)
+                .is_none()),
+            "the other area took in a panel it has no view for"
+        );
+        assert!(
+            cx.read(|cx| mine
+                .read(cx)
+                .layout(DockPlacement::Center)
+                .unwrap()
+                .find_panel_node(stranger)
+                .is_some()),
+            "the panel left the area that owns it"
+        );
     }
 
     /// The id of the center split's `ix`-th child container.
@@ -2128,6 +2530,300 @@ mod tests {
 
     fn is_center_empty(area: &Entity<DockArea>, cx: &mut VisualTestContext) -> bool {
         cx.read(|cx| area.read(cx).is_empty(DockPlacement::Center, cx))
+    }
+
+    /// The first tab group of a region's tree. A bare `tabs()` layout is still
+    /// wrapped in a split of one, so the root itself is not the group.
+    fn root_group(
+        area: &Entity<DockArea>,
+        placement: DockPlacement,
+        cx: &mut VisualTestContext,
+    ) -> Entity<TabGroup> {
+        cx.read(|cx| {
+            let area = area.read(cx);
+            let tree = match placement {
+                DockPlacement::Center => &area.center,
+                other => &area.docks.get(&other).expect("no such dock").tree,
+            };
+            let node = first_tab_group(tree.root()).expect("the region holds no tab group");
+            area.groups
+                .get(&node)
+                .expect("no group there")
+                .entity
+                .clone()
+        })
+    }
+
+    /// A panel by itself in a side dock can still be dragged out.
+    ///
+    /// What "alone" guards is the dock being emptied, and the dock is the
+    /// whole area. Read per tree, it made the only panel of a side region
+    /// immovable — dragging it into the centre leaves that region empty, which
+    /// is what closing a region *is*, and Claudhub's search screen had its
+    /// results list pinned to the left with no way to put it beside the
+    /// preview.
+    #[gpui::test]
+    fn a_panel_alone_in_a_side_dock_can_still_be_moved(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, _centre, cx) = one_group(&log, &["Centre"], None, cx);
+        cx.update(|window, cx| {
+            let side = TestPanel::logging("Side", &log, cx);
+            area.update(cx, |area, cx| {
+                area.set_dock(
+                    DockPlacement::Left,
+                    DockLayout::tabs().panel(side),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        let side = root_group(&area, DockPlacement::Left, cx);
+        assert!(
+            cx.read(|cx| side.read(cx).context(cx).is_draggable()),
+            "it has the centre to go to"
+        );
+        let centre = root_group(&area, DockPlacement::Center, cx);
+        assert!(
+            cx.read(|cx| centre.read(cx).context(cx).is_draggable()),
+            "and the centre has the side dock"
+        );
+    }
+
+    /// Whether the left dock puts anything on screen this frame.
+    fn draws_left_dock(area: &Entity<DockArea>, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.render_dock(DockPlacement::Left, window, cx).is_some()
+            })
+        })
+    }
+
+    /// And the region it leaves behind stops being drawn.
+    ///
+    /// A dock keeps its size and its tree once emptied, so the frame went on
+    /// reserving the sidebar's width around a group with nothing in it: on the
+    /// search screen, dragging the results list beside the preview left a dead
+    /// band down the left of the window.
+    #[gpui::test]
+    fn a_side_dock_that_has_been_emptied_is_not_drawn(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, _centre, cx) = one_group(&log, &["Centre"], None, cx);
+        let side = cx.update(|window, cx| {
+            let side = TestPanel::logging("Side", &log, cx);
+            area.update(cx, |area, cx| {
+                area.set_dock(
+                    DockPlacement::Left,
+                    DockLayout::tabs().panel(side.clone()),
+                    window,
+                    cx,
+                );
+            });
+            side
+        });
+        cx.run_until_parked();
+        assert!(draws_left_dock(&area, cx), "a dock holding a panel draws");
+
+        let target = cx.read(|cx| {
+            first_tab_group(area.read(cx).layout(DockPlacement::Center).unwrap().root())
+                .expect("the centre holds a tab group")
+        });
+        let side_id = panel_id_of(&side);
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.move_panel(
+                    side_id,
+                    InsertTarget::Tabs {
+                        node: target,
+                        ix: None,
+                        activate: true,
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.run_until_parked();
+
+        assert!(
+            cx.read(|cx| area.read(cx).is_empty(DockPlacement::Left, cx)),
+            "the panel left the left dock"
+        );
+        assert!(
+            !draws_left_dock(&area, cx),
+            "and the emptied region reserves no width"
+        );
+    }
+
+    /// Dragging the divider between two centre groups resizes them.
+    ///
+    /// The scenario is a panel dropped beside the centre — a terminal to the
+    /// right of a diff: one split in the centre, and the mouse on the handle
+    /// between the two groups.
+    #[gpui::test]
+    fn dragging_the_centre_divider_resizes_the_groups(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton, point};
+
+        /// The frames the real skin gives the area, sized like
+        /// `gpui-component`'s `DockSkin`: the bare defaults carry no size at
+        /// all, and a frame chain with an indefinite height collapses the
+        /// handles to nothing — which is not the case under test.
+        struct SkinLike;
+        impl DockAreaRenderer for SkinLike {
+            fn frame(&self, _: &mut Window, _: &mut App) -> Stateful<Div> {
+                div()
+                    .id("dock-area")
+                    .relative()
+                    .size_full()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_row()
+            }
+            fn center_frame(&self, _: &mut Window, _: &mut App) -> Stateful<Div> {
+                div()
+                    .id("dock-area-center")
+                    .flex()
+                    .flex_1()
+                    .flex_col()
+                    .overflow_hidden()
+            }
+            fn split_frame(
+                &self,
+                node: NodeId,
+                _: Axis,
+                _: &mut Window,
+                _: &mut App,
+            ) -> Stateful<Div> {
+                div()
+                    .id(("dock-split-frame", node.as_u64()))
+                    .size_full()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_hidden()
+            }
+            // Claudhub's variant is Segmented, whose gap is four pixels taken
+            // as padding inside every slot but the first — the handle then
+            // sits in that gap.
+            fn split_gap(&self, _: &App) -> Pixels {
+                px(4.)
+            }
+            fn tab_group_renderer(&self) -> Rc<dyn TabGroupRenderer> {
+                Rc::new(BareTabGroup)
+            }
+            fn tiles_renderer(&self) -> Rc<dyn TilesRenderer> {
+                Rc::new(BareTiles)
+            }
+        }
+
+        cx.update(|cx| {
+            let _ = crate::Theme::global_mut(cx);
+        });
+        let log = Log::default();
+        let (area, cx) = cx.add_window_view(|window, cx| {
+            DockArea::new("test-dock", None, window, cx).with_renderer(Rc::new(SkinLike))
+        });
+        cx.update(|window, cx| {
+            let alpha = TestPanel::logging("Alpha", &log, cx);
+            let beta = TestPanel::logging("Beta", &log, cx);
+            area.update(cx, |area, cx| {
+                // Sized slots, as a layout read back from disk leaves them:
+                // both carry a preference, so neither is the unconstrained
+                // slot the leftover would go to.
+                area.set_center(
+                    DockLayout::h_split()
+                        .child(DockLayout::tabs().panel(alpha), Some(px(1200.)))
+                        .child(DockLayout::tabs().panel(beta), Some(px(720.))),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let root = cx.read(|cx| {
+            area.read(cx)
+                .layout(DockPlacement::Center)
+                .unwrap()
+                .root()
+                .id()
+        });
+        let state = cx.read(|cx| area.read(cx).splits.get(&root).unwrap().entity.clone());
+        let before = state.read_with(cx, |state, _| state.sizes().clone());
+        let boundary = before[0];
+
+        cx.simulate_mouse_down(
+            point(boundary - px(2.), px(50.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(boundary + px(10.), px(50.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(boundary + px(40.), px(50.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(boundary + px(40.), px(50.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+
+        let after = state.read_with(cx, |state, _| state.sizes().clone());
+        assert!(
+            after[0] > before[0] + px(30.),
+            "the divider did not move: {before:?} -> {after:?}"
+        );
+
+        // A second drag, back towards the left, after the first one's result
+        // has been written into the tree and reconciled: the write-back path
+        // must not pin the divider where the first drag left it.
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let before = after;
+        let boundary = before[0];
+        cx.simulate_mouse_down(
+            point(boundary - px(2.), px(50.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(boundary - px(10.), px(50.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(boundary - px(200.), px(50.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(boundary - px(200.), px(50.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        let after = state.read_with(cx, |state, _| state.sizes().clone());
+        assert!(
+            after[0] < before[0] - px(150.),
+            "the second drag did not move the divider back: {before:?} -> {after:?}"
+        );
+    }
+
+    /// The other half of the same rule: with one group in the whole area, its
+    /// panel has nowhere to be dropped back and stays put.
+    #[gpui::test]
+    fn the_areas_very_last_panel_stays_put(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, _only, cx) = one_group(&log, &["Only"], None, cx);
+        let group = root_group(&area, DockPlacement::Center, cx);
+        assert!(!cx.read(|cx| group.read(cx).context(cx).is_draggable()));
+        assert!(!cx.read(|cx| group.read(cx).context(cx).is_closable()));
     }
 
     #[gpui::test]
@@ -2479,6 +3175,152 @@ mod tests {
         );
     }
 
+    /// A slot split off with an explicit size is **drawn** at that size.
+    ///
+    /// The growth slot is the one that absorbs whatever the others leave
+    /// over. Handing that job to the last slot hands it to the very one the
+    /// caller has just pinned: a panel split off 260px tall came out half the
+    /// height of its neighbour, while the state's `sizes` went on saying 260 —
+    /// so the first drag of its handle computed from a size nothing on screen
+    /// had, and the separator would not follow the pointer.
+    #[gpui::test]
+    fn a_slot_split_off_with_a_size_is_drawn_at_it(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, panels, cx) = one_group(&log, &["Alpha", "Beta"], None, cx);
+        let group = child_node(&area, 0, cx);
+        let beta = panel_id_of(&panels[1]);
+
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.move_panel(
+                    beta,
+                    InsertTarget::Split {
+                        node: group,
+                        placement: Placement::Bottom,
+                        size: Some(px(260.)),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        let wrapper = child_node(&area, 0, cx);
+        let (sizes, container) = cx.read(|cx| {
+            let state = area.read(cx).splits[&wrapper].entity.read(cx);
+            (state.sizes().clone(), state.container_size())
+        });
+        assert_eq!(sizes.len(), 2, "the drop splits the group in two");
+        let total: f32 = sizes.iter().map(|size| size.as_f32()).sum();
+        assert!(
+            (total - container.as_f32()).abs() <= 4.,
+            "what the slots are recorded at has to add up to the container \
+             they are drawn in, got {sizes:?} in {container:?}"
+        );
+        assert!(
+            (sizes[1].as_f32() - 260.).abs() <= 4.,
+            "the new slot keeps the size it was split off with, got {sizes:?}"
+        );
+    }
+
+    /// The same, when what is split is the region's **root** rather than a
+    /// container inside it — which is what an application asking for "under
+    /// the whole centre" writes.
+    #[gpui::test]
+    fn splitting_the_root_leaves_a_separator_that_moves(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, panels, cx) = one_group(&log, &["Alpha", "Beta"], None, cx);
+        let root = cx.read(|cx| {
+            area.read(cx)
+                .layout(DockPlacement::Center)
+                .unwrap()
+                .root()
+                .id()
+        });
+        let beta = panel_id_of(&panels[1]);
+
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.move_panel(
+                    beta,
+                    InsertTarget::Split {
+                        node: root,
+                        placement: Placement::Bottom,
+                        size: Some(px(260.)),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        let root = cx.read(|cx| {
+            area.read(cx)
+                .layout(DockPlacement::Center)
+                .unwrap()
+                .root()
+                .id()
+        });
+        let state = cx.read(|cx| area.read(cx).splits[&root].entity.clone());
+        let before = cx.read(|cx| state.read(cx).sizes().clone());
+        assert_eq!(before.len(), 2, "the root split holds the two slots");
+        cx.update(|window, cx| {
+            state.update(cx, |state, cx| state.resize_panel(0, px(120.), window, cx))
+        });
+        cx.run_until_parked();
+
+        let sizes = cx.read(|cx| state.read(cx).sizes().clone());
+        assert!(
+            (sizes[0].as_f32() - 120.).abs() <= 4.,
+            "the separator goes where it was pulled, got {sizes:?} from {before:?}"
+        );
+    }
+
+    /// Dragging the separator of a slot that was split off with a size moves
+    /// it where the pointer asked, and not halfway there.
+    #[gpui::test]
+    fn a_sized_slot_can_still_be_dragged_to_a_new_size(cx: &mut TestAppContext) {
+        let log = Log::default();
+        let (area, panels, cx) = one_group(&log, &["Alpha", "Beta"], None, cx);
+        let group = child_node(&area, 0, cx);
+        let beta = panel_id_of(&panels[1]);
+
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.move_panel(
+                    beta,
+                    InsertTarget::Split {
+                        node: group,
+                        placement: Placement::Bottom,
+                        size: Some(px(260.)),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        let wrapper = child_node(&area, 0, cx);
+        let state = cx.read(|cx| area.read(cx).splits[&wrapper].entity.clone());
+        // What a drag of the separator does, by the same path: the top slot
+        // is asked for a height, twice, as a pointer held still would.
+        for _ in 0..1 {
+            cx.update(|window, cx| {
+                state.update(cx, |state, cx| state.resize_panel(0, px(120.), window, cx))
+            });
+            cx.run_until_parked();
+        }
+
+        let sizes = cx.read(|cx| state.read(cx).sizes().clone());
+        assert!(
+            (sizes[0].as_f32() - 120.).abs() <= 4.,
+            "the separator goes where it was pulled, got {sizes:?}"
+        );
+    }
+
     /// A drop into a split that already holds more than one slot, which is the
     /// shape a real workspace is in by the time anyone drags anything.
     #[gpui::test]
@@ -2655,6 +3497,174 @@ mod tests {
             (fixed - 200.).abs() <= 4.,
             "the fixed slot keeps its 200px instead of being rescaled by the \
              flexible sibling's placeholder, got {fixed}"
+        );
+    }
+
+    /// A panel that draws a measurable box, so a test can read where a slot
+    /// actually landed rather than what `ResizableState` believes about it.
+    struct MeasuredPanel {
+        name: &'static str,
+        focus_handle: FocusHandle,
+    }
+
+    impl MeasuredPanel {
+        fn new(name: &'static str, cx: &mut App) -> Entity<Self> {
+            cx.new(|cx| Self {
+                name,
+                focus_handle: cx.focus_handle(),
+            })
+        }
+    }
+
+    impl Panel for MeasuredPanel {
+        fn panel_name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    impl EventEmitter<PanelEvent> for MeasuredPanel {}
+
+    impl Focusable for MeasuredPanel {
+        fn focus_handle(&self, _: &App) -> FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl Render for MeasuredPanel {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let name = self.name;
+            div().size_full().debug_selector(move || name.into())
+        }
+    }
+
+    fn draw_frames(cx: &mut VisualTestContext, frames: usize) {
+        for _ in 0..frames {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+    }
+
+    /// Switching a tab edits one group, yet `commit` reconciles every
+    /// container. Reconciling a split the edit did not touch re-adopted the
+    /// tree's `None` for its flexible slot, un-pinning the size the first
+    /// layout pass had measured for it, so the split re-flexed from scratch
+    /// and its sized neighbour shrank. This is the dock example's left column
+    /// getting shorter on every tab click in the bottom dock.
+    #[gpui::test]
+    fn switching_a_tab_leaves_an_untouched_split_where_it_was_drawn(cx: &mut TestAppContext) {
+        let (area, cx) = setup(cx);
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.set_center(
+                    DockLayout::tabs().panel(TestPanel::new("Center", cx)),
+                    window,
+                    cx,
+                );
+                area.set_dock(
+                    DockPlacement::Left,
+                    DockLayout::v_split()
+                        .child(
+                            DockLayout::tabs().panel(MeasuredPanel::new("upper-left", cx)),
+                            None,
+                        )
+                        .child(
+                            DockLayout::tabs().panel(MeasuredPanel::new("lower-left", cx)),
+                            Some(px(360.)),
+                        ),
+                    window,
+                    cx,
+                );
+                area.set_dock_size(DockPlacement::Left, px(350.), window, cx);
+                area.set_dock(
+                    DockPlacement::Bottom,
+                    DockLayout::tabs()
+                        .panel(TestPanel::new("Tooltip", cx))
+                        .panel(TestPanel::new("Icon", cx)),
+                    window,
+                    cx,
+                );
+                area.set_dock_size(DockPlacement::Bottom, px(200.), window, cx);
+            });
+        });
+        cx.run_until_parked();
+        draw_frames(cx, 3);
+        let before = (
+            cx.debug_bounds("upper-left").unwrap(),
+            cx.debug_bounds("lower-left").unwrap(),
+        );
+
+        let bottom = cx.read(|cx| {
+            area.read(cx)
+                .layout(DockPlacement::Bottom)
+                .unwrap()
+                .root()
+                .id()
+        });
+        let group = cx.read(|cx| area.read(cx).groups[&bottom].entity.clone());
+        cx.update(|window, cx| {
+            group.update(cx, |group, cx| group.select_tab(1, window, cx));
+        });
+        cx.run_until_parked();
+        draw_frames(cx, 3);
+        let after = (
+            cx.debug_bounds("upper-left").unwrap(),
+            cx.debug_bounds("lower-left").unwrap(),
+        );
+
+        assert_eq!(
+            before, after,
+            "a tab change in the bottom dock must not move the left split"
+        );
+    }
+
+    /// The other way a reconcile could move an untouched split: its file holds
+    /// pixels measured in some other window, the first layout pass rescaled
+    /// the state to the container it actually has, and handing the file's
+    /// pixels back on a tab change slides the divider to a third position.
+    #[gpui::test]
+    fn switching_a_tab_keeps_a_restored_split_at_its_rescaled_share(cx: &mut TestAppContext) {
+        let (area, cx) = setup(cx);
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.set_center(
+                    DockLayout::h_split()
+                        .child(
+                            DockLayout::tabs()
+                                .panel(TestPanel::new("Alpha", cx))
+                                .panel(TestPanel::new("Beta", cx)),
+                            Some(px(620.)),
+                        )
+                        .child(
+                            DockLayout::tabs().panel(MeasuredPanel::new("second", cx)),
+                            Some(px(350.)),
+                        ),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+        draw_frames(cx, 3);
+        // The second slot's box tells where the divider is: its left edge is
+        // the first slot's width, and the two add up to the container.
+        let before = cx.debug_bounds("second").unwrap();
+        assert_ne!(
+            before.right(),
+            px(970.),
+            "the window must not match the recorded total, or this test cannot \
+             tell a rescaled split from the file's pixels"
+        );
+
+        let group = group_of(&area, 0, cx);
+        cx.update(|window, cx| {
+            group.update(cx, |group, cx| group.select_tab(1, window, cx));
+        });
+        cx.run_until_parked();
+        draw_frames(cx, 3);
+        let after = cx.debug_bounds("second").unwrap();
+
+        assert_eq!(
+            before, after,
+            "a tab change must not hand the file's pixels back to the split"
         );
     }
 
@@ -2907,7 +3917,8 @@ mod tests {
             "the added panel's view is registered"
         );
         let state = cx.read(|cx| area.read(cx).dump(cx));
-        let names: Vec<&str> = state.center.children[0]
+        let names: Vec<&str> = state
+            .center
             .children
             .iter()
             .map(|child| child.panel_name.as_str())
@@ -3252,7 +4263,7 @@ mod tests {
         cx.update(|window, cx| area.update(cx, |area, cx| area.load(state, window, cx).unwrap()));
 
         let dumped = cx.read(|cx| area.read(cx).dump(cx));
-        let tiles = &dumped.center.children[0];
+        let tiles = &dumped.center;
         assert_eq!(tiles.panel_name, "Tiles");
         assert_eq!(
             tiles
@@ -3340,6 +4351,35 @@ mod tests {
             "the survivors kept their own proportions: slot 0 was removed, not \
              the tail — got {after:?} from {before:?}"
         );
+    }
+
+    /// A group carries the region it sits in, so a skin can give an edge a
+    /// different chrome from the centre's — which is what an application whose
+    /// side zones are chosen from a rail of its own needs.
+    #[gpui::test]
+    fn a_group_says_which_region_it_sits_in(cx: &mut TestAppContext) {
+        let log = log_of();
+        let (area, _alpha, cx) = one_group(&log, &["Alpha"], None, cx);
+        cx.update(|window, cx| {
+            let beta = TestPanel::logging("Beta", &log, cx);
+            area.update(cx, |area, cx| {
+                area.set_dock(
+                    DockPlacement::Left,
+                    DockLayout::tabs().panel(beta),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        for placement in [DockPlacement::Center, DockPlacement::Left] {
+            let group = root_group(&area, placement, cx);
+            assert_eq!(
+                cx.read(|cx| group.read(cx).context(cx).placement()),
+                placement
+            );
+        }
     }
 
     #[gpui::test]
@@ -3525,19 +4565,19 @@ mod tests {
         let node = child_node(&area, 0, cx);
         let group = cx.read(|cx| area.read(cx).groups.get(&node).unwrap().entity.clone());
         assert!(
-            cx.read(|cx| group.read(cx).can_close(cx)),
+            cx.read(|cx| group.read(cx).is_closable(cx)),
             "an unlocked group's panel can be closed"
         );
 
         cx.update(|window, cx| area.update(cx, |area, cx| area.set_locked(true, window, cx)));
 
         assert!(
-            !cx.read(|cx| group.read(cx).can_close(cx)),
+            !cx.read(|cx| group.read(cx).is_closable(cx)),
             "the lock reaches every group through the constraints push"
         );
     }
 
-    // The tests below were ported from `crates/ui/src/dock/tab_panel.rs` when
+    // The tests below were ported from `crates/component/src/dock/tab_panel.rs` when
     // the dock skin was rebuilt on this crate. They are the surviving record
     // of the `is_empty` semantics and the documented `set_active` contract.
 
@@ -4000,7 +5040,7 @@ mod tests {
 
     #[gpui::test]
     fn closing_a_tile_removes_its_panel(cx: &mut TestAppContext) {
-        // `TileContext::can_close` would otherwise be a control a skin can
+        // `TileContext::is_closable` would otherwise be a control a skin can
         // draw and never wire up.
         let log = log_of();
         let (area, cx) = setup(cx);
@@ -4036,7 +5076,7 @@ mod tests {
         });
         cx.update(|window, cx| {
             let tile = canvas.read(cx).tiles(cx)[0].clone();
-            assert!(tile.can_close());
+            assert!(tile.is_closable());
             tile.close(window, cx);
         });
         cx.run_until_parked();
@@ -4226,7 +5266,7 @@ mod tests {
         drag_bars.borrow_mut().clear();
         cx.update(|window, cx| {
             let tile = canvas.read(cx).tiles(cx)[0].clone();
-            assert!(tile.can_zoom());
+            assert!(tile.is_zoomable());
             tile.toggle_zoom(window, cx);
         });
         cx.run_until_parked();

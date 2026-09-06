@@ -22,10 +22,10 @@ description: 带有可搜索下拉列表的自动补全输入组件。
 ## 导入
 
 ```rust
-use gpui_component::combobox::{
+use gpui_kit::component::combobox::{
     Combobox, ComboboxState, ComboboxEvent, ComboboxTriggerCtx,
 };
-use gpui_component::searchable_list::{
+use gpui_kit::component::searchable_list::{
     SearchableListItem, SearchableVec, SearchableGroup,
 };
 ```
@@ -237,6 +237,10 @@ cx.subscribe_in(&state, window, |view, _, event, window, cx| {
 ### 程序化操控
 
 值会通过当前 delegate 解析，无法找到的值会被忽略。
+
+`set_selected_values` 会先清除搜索关键词，因此正在进行的搜索不会决定哪些值可以被选中。
+index path 定位的是列表当前显示的内容，所以 `set_selected_indices`、`add_selected_index`
+和 `remove_selected_index` 作用于可见行，不会改动搜索关键词。
 
 ```rust
 // 按值替换整个选中集合

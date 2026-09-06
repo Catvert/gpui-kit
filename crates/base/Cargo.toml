@@ -3,16 +3,22 @@ description = "Behavior, interaction, and infrastructure foundations for GPUI ap
 keywords = ["desktop", "gpui", "ui", "foundation"]
 license = "Apache-2.0"
 name = "gpui-base"
-default-run = "components"
-repository = "https://github.com/longbridge/gpui-component"
-homepage = "https://longbridge.github.io/gpui-component"
+# The showcase binary and examples are development tools that read fixtures
+# from `crates/story`; they stay out of the published package.
+exclude = ["src/bin/", "examples/"]
+repository = "https://github.com/longbridge/gpui-kit"
+homepage = "https://gpui-kit.com"
 documentation = "https://docs.rs/gpui-base"
-version = "0.5.2"
-publish = false
+version = "0.6.0"
+publish = true
 edition.workspace = true
 
 [lib]
 doctest = false
+
+[[bench]]
+name = "motion"
+harness = false
 
 [features]
 inspector = ["gpui_macros/inspector", "gpui/inspector"]
@@ -21,10 +27,14 @@ inspector = ["gpui_macros/inspector", "gpui/inspector"]
 anyhow.workspace = true
 aho-corasick = "1.1.3"
 chrono = "0.4.38"
+futures = "0.3"
 gpui.workspace = true
 gpui_macros.workspace = true
 instant.workspace = true
 lsp-types.workspace = true
+markdown = { version = "1.0.0", features = ["serde"] }
+html5ever = "0.27"
+markup5ever_rcdom = "0.3.0"
 ropey.workspace = true
 regex = "1"
 schemars.workspace = true
@@ -53,6 +63,7 @@ objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString"] }
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 indoc = "2"
+reqwest_client.workspace = true
 
 [lints]
 workspace = true

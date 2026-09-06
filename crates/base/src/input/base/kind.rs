@@ -179,6 +179,17 @@ pub trait InputModeKind: sealed::Sealed + Sized + 'static {
         None
     }
 
+    /// The application's gutter markers, when this mode can carry any.
+    ///
+    /// The element is generic over the mode and the renderer lives in an
+    /// editor's extras, so it is fetched through the mode rather than read off
+    /// the state directly — the same detour `hover_definition_style` takes.
+    fn gutter_mark_renderer(
+        _state: &InputBaseState<Self>,
+    ) -> Option<crate::input::GutterMarkRenderer> {
+        None
+    }
+
     /// Drops cached language-server results, e.g. after the text is replaced.
     fn reset_language_features(_state: &mut InputBaseState<Self>) {}
 
@@ -331,6 +342,7 @@ pub struct EditorExtras {
     pub(crate) hover_popover: Option<HoverPopoverState>,
     pub(crate) hover_definition: HoverDefinition,
     pub(crate) context_menu_task: Task<anyhow::Result<()>>,
+    pub(crate) gutter_marks: Option<crate::input::GutterMarkRenderer>,
 }
 
 impl Default for EditorExtras {
@@ -343,6 +355,7 @@ impl Default for EditorExtras {
             hover_popover: None,
             hover_definition: HoverDefinition::default(),
             context_menu_task: Task::ready(Ok(())),
+            gutter_marks: None,
         }
     }
 }

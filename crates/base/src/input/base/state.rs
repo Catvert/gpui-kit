@@ -295,6 +295,19 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) scroll_beyond_last_line: Option<usize>,
     pub(super) cursor_surrounding_lines: Option<usize>,
     pub(super) blink_cursor: Entity<BlinkCursor>,
+    /// The caret is not painted at all, and does not blink.
+    ///
+    /// For a control that draws a cursor of its own — a modal editor's block
+    /// cursor is the case this exists for: the caret would blink on top of it,
+    /// and two cursors on one character say less than one.
+    pub(super) cursor_hidden: bool,
+    /// The caret is painted a character wide, in this colour, and does not
+    /// blink.
+    ///
+    /// A modal editor paints its block cursor over the character it covers, and
+    /// an empty line has none: there the caret is all there is to paint, and a
+    /// blinking bar there says insert mode on a line that is not in it.
+    pub(super) caret_block: Option<gpui::Hsla>,
     pub(super) loading: bool,
     /// Range in UTF-8 length for the selected text.
     ///
@@ -339,7 +352,16 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) scroll_size: gpui::Size<Pixels>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
     pub(super) editor_paddings: Edges<Pixels>,
+    /// The style this state paints with: what was projected onto it, with
+    /// every colour left unset resolved from the palette that is current. It
+    /// is rebuilt at the top of every render, which is what keeps it current
+    /// when the palette changes after the state was built.
     pub(super) editor_style: InputEditorStyle,
+    /// What a consumer projected, kept verbatim so that resolution never
+    /// consumes its own output: resolving in place would fill the unset
+    /// colours once and then never see them as unset again, which is the same
+    /// freeze in a different place.
+    projected_editor_style: InputEditorStyle,
 
     /// The mask pattern for formatting the input text
     pub(crate) mask_pattern: MaskPattern,
@@ -474,6 +496,18 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.input_bounds
     }
 
+    /// The size of the scrollable content, as the last paint measured it.
+    ///
+    /// Zero before the first layout. Together with [`Self::input_bounds`] it
+    /// gives the vertical travel an application may scroll through —
+    /// `(input_bounds().size.height - scroll_size().height).min(px(0.))..px(0.)`
+    /// is the very range [`Self::set_scroll_offset`] clamps to. Wrapped lines,
+    /// folded ranges and the room kept under the last line are all counted in,
+    /// none of which can be worked out from the line count alone.
+    pub fn scroll_size(&self) -> gpui::Size<Pixels> {
+        self.scroll_size
+    }
+
     pub fn text_bounds(&self) -> Option<Bounds<Pixels>> {
         self.last_bounds
     }
@@ -502,6 +536,17 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// Answered by the mode marker, which is fixed when the state is built.
     /// [`LayoutMode`] holds the row counts and growth policy, not the kind.
     #[inline]
+    /// Whether this input paints scrollbars.
+    ///
+    /// Only a multi-line input can scroll: a single-line input keeps its
+    /// caret in view by moving its own offset, and never has a viewport a
+    /// user could drag. Adding the editor scrollbar to every input put a
+    /// thumb inside every text field, which is a control the field does not
+    /// have.
+    pub(crate) fn shows_scrollbar(&self) -> bool {
+        self.is_multi_line()
+    }
+
     pub fn is_multi_line(&self) -> bool {
         M::MULTI_LINE
     }
@@ -518,6 +563,13 @@ impl<M: InputModeKind> InputBaseState<M> {
         M::CODE_EDITOR
     }
 
+    /// Whether the user is allowed to copy the selection out.
+    ///
+    /// A masked input keeps its value out of the clipboard.
+    pub fn is_copyable(&self) -> bool {
+        !self.selected_range.is_empty() && !self.masked
+    }
+
     pub fn context_menu_capabilities(&self) -> InputContextMenuCapabilities {
         let (go_to_definition, code_actions) = self.extras.context_menu_capabilities();
         InputContextMenuCapabilities::new()
@@ -525,6 +577,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             .readonly(self.readonly)
             .code_editor(self.is_code_editor())
             .selection(!self.selected_range.is_empty())
+            .masked(self.masked)
             .go_to_definition(go_to_definition)
             .code_actions(code_actions)
     }
@@ -596,6 +649,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             scroll_beyond_last_line: None,
             cursor_surrounding_lines: None,
             blink_cursor,
+            cursor_hidden: false,
+            caret_block: None,
             undo_manager,
             selected_range: Selection::default(),
             selected_word_range: None,
@@ -631,6 +686,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
             editor_style: InputEditorStyle::default(),
+            projected_editor_style: InputEditorStyle::default(),
             diagnostic_popover: None,
             context_menu_handler: None,
             pending_context_menu: None,
@@ -719,7 +775,8 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     pub fn set_editor_style(&mut self, style: InputEditorStyle) {
-        self.editor_style = style;
+        self.editor_style = style.clone();
+        self.projected_editor_style = style;
     }
 
     /// Set presentation padding for multi-line text and its scrollbar layout.
@@ -1253,7 +1310,8 @@ impl<M: InputModeKind> InputBaseState<M> {
     ) {
         self.undo_manager.break_transaction_coalescing();
         let offset = self.end_of_line();
-        self.select_to(offset, cx);
+        // Mirrors MoveEnd: the caret belongs at the end of the visual row it is on.
+        self.select_to_with_affinity(offset, true, cx);
     }
 
     pub(super) fn select_to_previous_word(
@@ -1280,6 +1338,13 @@ impl<M: InputModeKind> InputBaseState<M> {
 
     /// Return the start offset of the previous word.
     pub(super) fn previous_start_of_word(&mut self) -> usize {
+        if self.masked {
+            // The mask replaces every character, so the displayed text has no
+            // word boundaries to move or delete by. Collapse the word to the
+            // whole text.
+            return 0;
+        }
+
         let offset = self.selected_range.start;
         let offset = self.offset_from_utf16(self.offset_to_utf16(offset));
         // FIXME: Avoid to_string
@@ -1293,6 +1358,11 @@ impl<M: InputModeKind> InputBaseState<M> {
 
     /// Return the next end offset of the next word.
     pub(super) fn next_end_of_word(&mut self) -> usize {
+        if self.masked {
+            // See `previous_start_of_word`.
+            return self.text.len();
+        }
+
         let offset = self.cursor();
         let offset = self.offset_from_utf16(self.offset_to_utf16(offset));
         let right_part = self.text.slice(offset..self.text.len()).to_string();
@@ -1316,7 +1386,10 @@ impl<M: InputModeKind> InputBaseState<M> {
         let logical_start = self.text.line_start_offset(row);
 
         if self.soft_wrap && self.is_code_editor() {
-            let wrap_point = self.display_map.offset_to_wrap_display_point(self.cursor());
+            let wrap_point = self.display_map.offset_to_wrap_display_point_with_affinity(
+                self.cursor(),
+                self.cursor_line_end_affinity,
+            );
             if let Some(line) = self.display_map.line(row)
                 && let Some(range) = line.wrapped_lines.get(wrap_point.local_row)
             {
@@ -1344,7 +1417,13 @@ impl<M: InputModeKind> InputBaseState<M> {
         let logical_end = self.text.line_end_offset(row);
 
         if self.soft_wrap && self.is_code_editor() {
-            let wrap_point = self.display_map.offset_to_wrap_display_point(self.cursor());
+            // Use the row the caret is drawn on: at a wrap boundary the raw offset would name
+            // the next row, and a second End press would keep walking down instead of falling
+            // through to the logical line end.
+            let wrap_point = self.display_map.offset_to_wrap_display_point_with_affinity(
+                self.cursor(),
+                self.cursor_line_end_affinity,
+            );
             if let Some(line) = self.display_map.line(row)
                 && let Some(range) = line.wrapped_lines.get(wrap_point.local_row)
             {
@@ -1665,7 +1744,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
 
         self.selecting = true;
-        let offset = self.index_for_mouse_position(event.position);
+        let (offset, line_end_affinity) = self.index_for_mouse_position(event.position);
 
         if M::on_click(self, event, offset, window, cx) {
             return;
@@ -1695,9 +1774,9 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
 
         if event.modifiers.shift {
-            self.select_to(offset, cx);
+            self.select_to_with_affinity(offset, line_end_affinity, cx);
         } else {
-            self.move_to(offset, None, cx)
+            self.move_to_with_affinity(offset, None, line_end_affinity, cx)
         }
     }
 
@@ -1740,7 +1819,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
 
         // Show diagnostic popover on mouse move
-        let offset = self.index_for_mouse_position(event.position);
+        let (offset, _) = self.index_for_mouse_position(event.position);
         M::on_mouse_move(self, offset, event, window, cx);
 
         if self.is_code_editor() {
@@ -1910,7 +1989,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     pub(super) fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
+        if !self.is_copyable() {
             return;
         }
 
@@ -1919,7 +1998,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     pub(super) fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
+        if !self.is_copyable() {
             return;
         }
 
@@ -2088,16 +2167,23 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.select_to(end, cx);
     }
 
-    pub(crate) fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
+    /// Resolve a mouse position to a byte offset in the text.
+    ///
+    /// Also reports the caret's line-end affinity for that offset: `true` when the position
+    /// landed on the wrap boundary of a non-final visual row, meaning the caret belongs at the
+    /// end of that row rather than at the start of the next one. Callers that place or extend a
+    /// selection must pass it on, or clicking past the last glyph of a wrapped row leaves a
+    /// caret one row below the pointer.
+    pub(crate) fn index_for_mouse_position(&self, position: Point<Pixels>) -> (usize, bool) {
         // If the text is empty, always return 0
         if self.text.len() == 0 {
-            return 0;
+            return (0, false);
         }
 
         let (Some(bounds), Some(last_layout)) =
             (self.last_bounds.as_ref(), self.last_layout.as_ref())
         else {
-            return 0;
+            return (0, false);
         };
 
         let line_height = last_layout.line_height;
@@ -2133,37 +2219,38 @@ impl<M: InputModeKind> InputBaseState<M> {
             // Return offset by use closest_index_for_x if is single line mode.
             if self.is_single_line() {
                 let local_index = line_layout.closest_index_for_x(pos.x, last_layout);
-                let index = line_start_offset + local_index;
-                return if self.masked {
-                    self.text.char_index_to_offset(index / MASK_CHAR.len_utf8())
-                } else {
-                    index.min(self.text.len())
-                };
+                // A single line never wraps, so there is no boundary to disambiguate.
+                return (self.resolve_index(line_start_offset + local_index), false);
             }
 
             // Check if mouse is in this line's bounds
-            if let Some(local_index) = line_layout.closest_index_for_position(pos, last_layout) {
-                let index = line_start_offset + local_index;
-                return if self.masked {
-                    self.text.char_index_to_offset(index / MASK_CHAR.len_utf8())
-                } else {
-                    index.min(self.text.len())
-                };
+            if let Some((local_index, line_end_affinity)) =
+                line_layout.closest_index_for_position(pos, last_layout)
+            {
+                return (
+                    self.resolve_index(line_start_offset + local_index),
+                    line_end_affinity,
+                );
             } else if pos.y < px(0.) {
                 // Mouse is above this line, return start of this line
-                return if self.masked {
-                    self.text
-                        .char_index_to_offset(line_start_offset / MASK_CHAR.len_utf8())
-                } else {
-                    line_start_offset
-                };
+                return (self.resolve_index(line_start_offset), false);
             }
 
             y_offset += line_layout.size(line_height).height;
         }
 
         // Mouse is below all visible lines, return end of text
-        self.text.len()
+        (self.text.len(), false)
+    }
+
+    /// Map a display byte index back to a text offset, undoing the mask expansion when the input
+    /// is masked.
+    fn resolve_index(&self, index: usize) -> usize {
+        if self.masked {
+            self.text.char_index_to_offset(index / MASK_CHAR.len_utf8())
+        } else {
+            index.min(self.text.len())
+        }
     }
 
     /// Returns a y offsetted point for the line origin.
@@ -2173,8 +2260,24 @@ impl<M: InputModeKind> InputBaseState<M> {
     ///
     /// Ensure the offset use self.next_boundary or self.previous_boundary to get the correct offset.
     pub(crate) fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.select_to_with_affinity(offset, false, cx);
+    }
+
+    /// Like [`Self::select_to`], but also carries the caret's line-end affinity.
+    ///
+    /// See [`Self::move_to_with_affinity`] for why the affinity travels with the offset. Note
+    /// that plain [`Self::select_to`] clears the affinity: every offset it is given came from
+    /// the text rather than from a visual position, so the caret has no reason to keep sticking
+    /// to the end of a wrapped row.
+    pub(crate) fn select_to_with_affinity(
+        &mut self,
+        offset: usize,
+        line_end_affinity: bool,
+        cx: &mut Context<Self>,
+    ) {
         M::clear_inline_completion(self, cx);
 
+        self.cursor_line_end_affinity = line_end_affinity;
         let offset = offset.clamp(0, self.text.len());
         if self.selection_reversed {
             self.selected_range.start = offset
@@ -2284,14 +2387,86 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub(crate) fn show_cursor(&self, window: &Window, cx: &App) -> bool {
         (self.focus_handle.is_focused(window) || M::is_context_menu_open(self, cx))
             && !self.disabled
-            && self.blink_cursor.read(cx).visible()
+            && !self.cursor_hidden
+            // A block caret is painted whole: blinking is what a bar does to be
+            // found, and a block is found already.
+            && (self.caret_block.is_some() || self.blink_cursor.read(cx).visible())
             && window.is_window_active()
     }
 
-    fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.blink_cursor.update(cx, |cursor, cx| {
-            cursor.start(cx);
+    /// Whether the caret is hidden.
+    pub fn is_cursor_hidden(&self) -> bool {
+        self.cursor_hidden
+    }
+
+    /// Hides the caret, or brings it back.
+    ///
+    /// The selection, the keys and the focus are untouched: only the painting of
+    /// the caret goes away. It is what a control that draws a cursor of its own
+    /// needs — a modal editor's block cursor, where the caret would blink on top
+    /// of the block — and it is not `disabled`, which dims the text as well.
+    ///
+    /// The blinking is stopped with it rather than left to run behind a caret
+    /// nobody paints: a blink is a repaint of the window twice a second, for as
+    /// long as the input has the focus.
+    pub fn set_cursor_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        if self.cursor_hidden == hidden {
+            return;
+        }
+
+        self.cursor_hidden = hidden;
+        let blink = !hidden && self.caret_block.is_none();
+        self.blink_cursor.update(cx, |blink_cursor, cx| {
+            if blink {
+                blink_cursor.start(cx);
+            } else {
+                blink_cursor.stop(cx);
+            }
         });
+        cx.notify();
+    }
+
+    /// The colour of the block caret, if one has been asked for.
+    pub fn caret_block(&self) -> Option<gpui::Hsla> {
+        self.caret_block
+    }
+
+    /// Paints the caret as a block a character wide, in `colour`, or gives back
+    /// the ordinary bar with `None`.
+    ///
+    /// It is the other half of [`Self::set_cursor_hidden`], and a modal editor
+    /// needs both: over a character it hides the caret and paints its own block,
+    /// which is a background the glyph shows through; where there is no
+    /// character — an empty line, the end of the file — there is nothing to
+    /// paint over, and the caret itself has to be the block. A bar there, and a
+    /// blinking one, reads as insert mode on a line that is not in it.
+    ///
+    /// A block does not blink: blinking is how a bar gets itself found, and a
+    /// block is found already. The blinking is stopped rather than left running
+    /// under it — it is a repaint of the window twice a second.
+    pub fn set_caret_block(&mut self, colour: Option<gpui::Hsla>, cx: &mut Context<Self>) {
+        if self.caret_block == colour {
+            return;
+        }
+
+        self.caret_block = colour;
+        let blink = colour.is_none() && !self.cursor_hidden;
+        self.blink_cursor.update(cx, |blink_cursor, cx| {
+            if blink {
+                blink_cursor.start(cx);
+            } else {
+                blink_cursor.stop(cx);
+            }
+        });
+        cx.notify();
+    }
+
+    fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.cursor_hidden {
+            self.blink_cursor.update(cx, |cursor, cx| {
+                cursor.start(cx);
+            });
+        }
         cx.emit(InputEvent::Focus);
     }
 
@@ -2353,6 +2528,10 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     pub(super) fn pause_blink_cursor(&mut self, cx: &mut Context<Self>) {
+        if self.cursor_hidden {
+            return;
+        }
+
         self.blink_cursor.update(cx, |cursor, cx| {
             cursor.pause(cx);
         });
@@ -2385,8 +2564,8 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
 
         self.auto_scroll.last_drag_position = Some(event.position);
-        let offset = self.index_for_mouse_position(event.position);
-        self.select_to(offset, cx);
+        let (offset, line_end_affinity) = self.index_for_mouse_position(event.position);
+        self.select_to_with_affinity(offset, line_end_affinity, cx);
 
         if !self.is_single_line() {
             let delta = AutoScroll::compute_delta(event.position.y, self.input_bounds);
@@ -2396,8 +2575,8 @@ impl<M: InputModeKind> InputBaseState<M> {
                 let current = state.scroll_handle.offset();
                 state.update_scroll_offset(Some(point(current.x, current.y + delta)), cx);
                 if let Some(pos) = state.auto_scroll.last_drag_position {
-                    let offset = state.index_for_mouse_position(pos);
-                    state.select_to(offset, cx);
+                    let (offset, line_end_affinity) = state.index_for_mouse_position(pos);
+                    state.select_to_with_affinity(offset, line_end_affinity, cx);
                 }
             });
         }
@@ -2746,6 +2925,12 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
                 None,
             );
         }
+        // A commit ends the IME composition: macOS delivers `insertText:` for
+        // the confirmed candidate without a following `unmarkText`, so close
+        // the transaction here. Leaving it open would keep merging every later
+        // edit into the same change, which then carries the text and selection
+        // of the first composition.
+        self.undo_manager.commit_transaction();
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
         }
@@ -2982,6 +3167,11 @@ impl<M: InputModeKind> Focusable for InputBaseState<M> {
 
 impl<M: InputModeKind> Render for InputBaseState<M> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Before anything reads it: the element resolves this style during
+        // layout and paint, and both happen after this call in the same frame.
+        self.editor_style = self
+            .projected_editor_style
+            .resolved(&crate::Theme::global(cx).tokens);
         let entity = cx.entity();
         if self._pending_update {
             self.mode.update_highlighter::<M>(
@@ -3087,7 +3277,9 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                     .pl(self.editor_paddings.left)
             })
             .child(TextElement::new(entity.clone()).placeholder(self.placeholder.clone()))
-            .child(EditorScrollbar::new(entity.clone()));
+            .when(self.shows_scrollbar(), |this| {
+                this.child(EditorScrollbar::new(entity.clone()))
+            });
 
         // Actions only one mode handles are registered by that mode, where
         // `Self` is concrete enough to name its own entity type.
@@ -3184,6 +3376,24 @@ mod tests {
                 f(crate::input::InputState::new(window, cx))
             })
         }
+    }
+
+    #[gpui::test]
+    fn only_a_multi_line_input_paints_scrollbars(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+
+        // A single-line input keeps its caret in view by moving its own offset;
+        // it has no viewport to drag, so a scrollbar in a text field is a
+        // control that does not exist.
+        let single = InputView::build(cx, |state| state);
+        single
+            .input
+            .update(cx, |state, _| assert!(!state.shows_scrollbar()));
+
+        let multi = InputView::build_textarea(cx, |state| state);
+        multi
+            .input
+            .update(cx, |state, _| assert!(state.shows_scrollbar()));
     }
 
     #[gpui::test]
@@ -3896,6 +4106,105 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_masked_input_keeps_its_value_out_of_the_clipboard(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value("hunter2", window, cx);
+                state.set_masked(true, window, cx);
+                state.select_all(window, cx);
+                cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
+
+                state.copy(&Copy, window, cx);
+                assert_eq!(
+                    cx.read_from_clipboard().and_then(|item| item.text()),
+                    Some("sentinel".to_string())
+                );
+
+                // Cut neither copies nor deletes.
+                state.cut(&Cut, window, cx);
+                assert_eq!(state.value(), "hunter2");
+                assert_eq!(
+                    cx.read_from_clipboard().and_then(|item| item.text()),
+                    Some("sentinel".to_string())
+                );
+
+                // Revealing the value restores both.
+                state.set_masked(false, window, cx);
+                state.copy(&Copy, window, cx);
+                assert_eq!(
+                    cx.read_from_clipboard().and_then(|item| item.text()),
+                    Some("hunter2".to_string())
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_masked_input_collapses_word_boundaries(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value("aaa bbb ccc", window, cx);
+                state.set_masked(true, window, cx);
+                state.set_selected_range(7..7, cx);
+
+                // The mask hides word boundaries, so a word delete takes
+                // everything before the caret and leaves the rest.
+                state.delete_previous_word(&DeleteToPreviousWordStart, window, cx);
+                assert_eq!(state.value(), " ccc");
+                assert_eq!(state.selected_range(), 0..0);
+
+                state.delete_next_word(&DeleteToNextWordEnd, window, cx);
+                assert_eq!(state.value(), "");
+
+                // A double click takes the whole value, not one word.
+                state.set_value("aaa bbb ccc", window, cx);
+                state.select_word(9, window, cx);
+                assert_eq!(state.selected_range(), 0..11);
+
+                // Unmasked, the same delete only takes one word.
+                state.set_masked(false, window, cx);
+                state.set_value("aaa bbb ccc", window, cx);
+                state.set_selected_range(11..11, cx);
+                state.delete_previous_word(&DeleteToPreviousWordStart, window, cx);
+                assert_eq!(state.value(), "aaa bbb ");
+
+                state.set_value("aaa bbb ccc", window, cx);
+                state.select_word(9, window, cx);
+                assert_eq!(state.selected_range(), 8..11);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_masked_input_disables_the_copy_context_menu_items(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value("hunter2", window, cx);
+                state.select_all(window, cx);
+                assert!(state.context_menu_capabilities().is_copyable());
+
+                state.set_masked(true, window, cx);
+                let capabilities = state.context_menu_capabilities();
+                assert!(capabilities.is_masked());
+                assert!(capabilities.has_selection());
+                assert!(!capabilities.is_copyable());
+            });
+        });
+    }
+
+    #[gpui::test]
     fn test_undo_manager_cut_and_repeated_pastes_are_distinct_transactions(
         cx: &mut TestAppContext,
     ) {
@@ -4394,6 +4703,69 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_undo_manager_consecutive_compositions_are_separate_groups(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                // First composition: "jin" -> "今天"
+                state.replace_and_mark_text_in_range(None, "j", None, window, cx);
+                state.replace_and_mark_text_in_range(None, "jin", None, window, cx);
+                state.replace_text_in_range(None, "今天", window, cx);
+                // Second composition: "wo" -> "我们"
+                state.replace_and_mark_text_in_range(None, "w", None, window, cx);
+                state.replace_and_mark_text_in_range(None, "wo", None, window, cx);
+                state.replace_text_in_range(None, "我们", window, cx);
+                assert_eq!(state.value(), "今天我们");
+                assert_eq!(state.selected_range(), 12..12);
+
+                state.undo(&Undo, window, cx);
+                assert_eq!(state.value(), "今天");
+                assert_eq!(state.selected_range(), 6..6);
+
+                state.undo(&Undo, window, cx);
+                assert_eq!(state.value(), "");
+                assert_eq!(state.selected_range(), 0..0);
+
+                state.redo(&Redo, window, cx);
+                assert_eq!(state.value(), "今天");
+                assert_eq!(state.selected_range(), 6..6);
+
+                state.redo(&Redo, window, cx);
+                assert_eq!(state.value(), "今天我们");
+                assert_eq!(state.selected_range(), 12..12);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_undo_manager_typing_after_composition_is_a_separate_group(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.replace_and_mark_text_in_range(None, "n", None, window, cx);
+                state.replace_text_in_range(None, "你", window, cx);
+                state.undo_manager.pending_intent = Some(EditIntent::Typing);
+                state.replace_text_in_range(None, "a", window, cx);
+                state.undo_manager.pending_intent = Some(EditIntent::Typing);
+                state.replace_text_in_range(None, "b", window, cx);
+                assert_eq!(state.value(), "你ab");
+
+                state.undo(&Undo, window, cx);
+                assert_eq!(state.value(), "你");
+
+                state.undo(&Undo, window, cx);
+                assert_eq!(state.value(), "");
+            });
+        });
+    }
+
+    #[gpui::test]
     fn test_undo_manager_composition_cancel_leaves_no_entry(cx: &mut TestAppContext) {
         let input_view = InputView::build(cx, |state| state);
         let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
@@ -4541,6 +4913,79 @@ mod tests {
         });
     }
 
+    /// Unfolding at a position opens exactly the folds hiding it.
+    ///
+    /// A fold keeps its own first and last line visible, so a position on
+    /// either of them opens nothing. Nested folds all open at once, sibling
+    /// folds stay closed, and the opened ranges stay fold candidates.
+    #[gpui::test]
+    fn test_unfold_at(cx: &mut TestAppContext) {
+        use crate::input::{FoldRange, Position};
+
+        let view = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        let input = view.input;
+
+        // An outer fold over lines 0..=5, a fold nested inside it, and a
+        // sibling fold that must never be touched.
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl", window, cx);
+                state.apply_highlighter_fold_candidates(
+                    vec![
+                        FoldRange::new(0, 5),
+                        FoldRange::new(2, 4),
+                        FoldRange::new(7, 10),
+                    ],
+                    cx,
+                );
+                state.display_map.set_folded(0, true);
+                state.display_map.set_folded(2, true);
+                state.display_map.set_folded(7, true);
+            });
+        });
+
+        // The outer fold's own first and last line stay visible, so neither
+        // position opens anything.
+        for line in [0, 5] {
+            cx.update(|_, cx| {
+                input.update(cx, |state, cx| {
+                    assert!(!state.display_map.is_buffer_line_hidden(line));
+                    assert!(!state.unfold_at(Position::new(line as u32, 0), cx));
+                });
+                input.read_with(cx, |state, _| {
+                    assert!(state.display_map.is_folded_at(0));
+                    assert!(state.display_map.is_folded_at(2));
+                    assert!(state.display_map.is_folded_at(7));
+                });
+            });
+        }
+
+        // Line 3 is hidden by both the outer and the nested fold, so both
+        // open; the sibling fold does not.
+        cx.update(|_, cx| {
+            input.update(cx, |state, cx| {
+                assert!(state.unfold_at(Position::new(3, 0), cx));
+            });
+            input.read_with(cx, |state, _| {
+                assert!(!state.display_map.is_buffer_line_hidden(3));
+                assert!(!state.display_map.is_folded_at(0));
+                assert!(!state.display_map.is_folded_at(2));
+                assert!(state.display_map.is_folded_at(7));
+                // The opened ranges are still candidates for refolding.
+                assert!(state.display_map.is_fold_candidate(0));
+                assert!(state.display_map.is_fold_candidate(2));
+            });
+        });
+
+        // Nothing is hidden there any more, so a second call is a no-op.
+        cx.update(|_, cx| {
+            input.update(cx, |state, cx| {
+                assert!(!state.unfold_at(Position::new(3, 0), cx));
+            });
+        });
+    }
+
     /// Losing focus hides the hover popover but keeps the decorations.
     ///
     /// Both used to be dropped by one call, so clicking away threw away
@@ -4623,6 +5068,39 @@ mod tests {
         editor
             .input
             .read_with(&mut editor_cx, |state, _| assert!(state.soft_wrap));
+    }
+
+    /// An editor says how many rows its text takes, which is what an
+    /// application growing a field with its content has to ask.
+    ///
+    /// `scroll_size` cannot answer it: it is floored at the height already on
+    /// screen, so a field that grew once would never shrink back. An empty
+    /// field is one row, not none.
+    #[gpui::test]
+    fn test_wrapped_row_count_follows_the_text(cx: &mut TestAppContext) {
+        let editor = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(editor.window_handle.into(), cx);
+        VisualTestContext::update(&mut cx, |window, cx| window.draw(cx).clear(cx));
+
+        editor
+            .input
+            .read_with(&mut cx, |state, _| assert_eq!(state.wrapped_row_count(), 1));
+
+        editor.input.update_in(&mut cx, |state, window, cx| {
+            state.set_value("one\ntwo\nthree", window, cx)
+        });
+        VisualTestContext::update(&mut cx, |window, cx| window.draw(cx).clear(cx));
+        editor
+            .input
+            .read_with(&mut cx, |state, _| assert_eq!(state.wrapped_row_count(), 3));
+
+        editor.input.update_in(&mut cx, |state, window, cx| {
+            state.set_value("one", window, cx)
+        });
+        VisualTestContext::update(&mut cx, |window, cx| window.draw(cx).clear(cx));
+        editor
+            .input
+            .read_with(&mut cx, |state, _| assert_eq!(state.wrapped_row_count(), 1));
     }
 }
 
@@ -4820,6 +5298,20 @@ impl<M: crate::input::MultiLineMode> InputBaseState<M> {
         self.display_map.set_wrapping_indent(wrapping_indent, cx);
         cx.notify();
     }
+
+    /// How many rows the text currently occupies on screen, soft wrap included.
+    ///
+    /// The number [`Self::auto_grow`] grows by, offered to applications that
+    /// cannot use it: the layout mode is auto-grow *or* code editor, so an
+    /// editor asked to follow its content has no way of asking how tall that
+    /// content is. [`Self::scroll_size`] does not answer it — it is floored at
+    /// the height already on screen, so a field that grew once could never
+    /// shrink back.
+    ///
+    /// Zero rows is reported as one: an empty field is a line high.
+    pub fn wrapped_row_count(&self) -> usize {
+        self.display_map.wrap_row_count().max(1)
+    }
 }
 
 /// Methods that only ordinary multi-line text offers.
@@ -4883,6 +5375,65 @@ impl InputBaseState<crate::input::TextareaMode> {
     }
 }
 
+/// Folding, driven from outside the editor.
+///
+/// The gutter icons fold from inside the element, which is enough for a mouse
+/// and nothing else: an application that gives its editor modal keys — vim's
+/// `zc`, `zo`, `za`, `zM`, `zR` — has no way in, `display_map` being private.
+/// These five are that way in, and they are the same three calls the icon
+/// makes.
+impl InputBaseState<crate::input::EditorMode> {
+    /// The line ranges that can be folded, in the order the highlighter gave
+    /// them. A line is named by the **buffer** line its fold starts on, which
+    /// is what every other call here takes.
+    pub fn fold_candidates(&self) -> Vec<crate::input::FoldRange> {
+        self.display_map.fold_candidates().to_vec()
+    }
+
+    /// Whether a fold starts on that line at all.
+    pub fn is_fold_candidate(&self, line: usize) -> bool {
+        self.display_map.is_fold_candidate(line)
+    }
+
+    /// Whether the fold starting on that line is closed.
+    pub fn is_folded_at(&self, line: usize) -> bool {
+        self.display_map.is_folded_at(line)
+    }
+
+    /// Closes or opens the fold starting on that line. Does nothing on a line
+    /// that starts no fold.
+    pub fn set_folded(&mut self, line: usize, folded: bool, cx: &mut Context<Self>) {
+        self.display_map.set_folded(line, folded);
+        cx.notify();
+    }
+
+    /// Opens every fold at once. Cheaper than walking the candidates, and the
+    /// only one of these that the fold map already had a name for.
+    pub fn unfold_all(&mut self, cx: &mut Context<Self>) {
+        self.display_map.clear_folds();
+        cx.notify();
+    }
+
+    /// Puts an application's markers in the gutter, or takes them away.
+    ///
+    /// See [`crate::input::GutterMarkRenderer`]. Passing `None` gives the
+    /// column back to the text: the width is reserved only while a renderer is
+    /// installed.
+    pub fn set_gutter_marks(
+        &mut self,
+        renderer: Option<crate::input::GutterMarkRenderer>,
+        cx: &mut Context<Self>,
+    ) {
+        self.extras.gutter_marks = renderer;
+        cx.notify();
+    }
+
+    /// Whether a gutter-marker renderer is installed.
+    pub fn has_gutter_marks(&self) -> bool {
+        self.extras.gutter_marks.is_some()
+    }
+}
+
 /// Methods that only a source-code editor offers.
 impl InputBaseState<crate::input::EditorMode> {
     /// Create a source-code editor state.
@@ -4940,6 +5491,41 @@ impl InputBaseState<crate::input::EditorMode> {
             self.display_map.clear_folds();
         }
         cx.notify();
+    }
+
+    /// Unfold any folded ranges that hide the given position.
+    ///
+    /// Use this to reveal a position before acting on it (e.g. before
+    /// [`Self::set_cursor_position`], which stops at a fold boundary),
+    /// without touching folds elsewhere in the buffer. Fold candidates are
+    /// kept, so the opened ranges can be folded again from the gutter.
+    ///
+    /// A fold keeps its own first and last line visible, so a position on
+    /// either of them opens nothing. Nested folds all open, since opening
+    /// only the outermost would leave the position hidden.
+    ///
+    /// Returns whether any fold was opened.
+    pub fn unfold_at(&mut self, position: impl Into<Position>, cx: &mut Context<Self>) -> bool {
+        let offset = self.text.position_to_offset(&position.into());
+        let line = self.text.offset_to_point(offset).row;
+        // A fold hides start_line + 1 ..= end_line - 1, so a line is hidden
+        // exactly when some folded range strictly contains it.
+        let covering: Vec<usize> = self
+            .display_map
+            .folded_ranges()
+            .iter()
+            .filter(|fold| line > fold.start_line && line < fold.end_line)
+            .map(|fold| fold.start_line)
+            .collect();
+        if covering.is_empty() {
+            return false;
+        }
+
+        for start_line in covering {
+            self.display_map.set_folded(start_line, false);
+        }
+        cx.notify();
+        true
     }
 
     /// Set enable/disable line number.

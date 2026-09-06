@@ -12,7 +12,7 @@ text and [Editor](./editor.md) for source code.
 ## Import
 
 ```rust
-use gpui_component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputState};
 ```
 
 ## Usage
@@ -57,7 +57,7 @@ Input::new(&input)
 ### With Prefix and Suffix
 
 ```rust
-use gpui_component::{Icon, IconName};
+use gpui_kit::component::{Icon, IconName};
 
 // With prefix icon
 Input::new(&input)
@@ -91,6 +91,12 @@ Input::new(&input)
     .content_type(InputContentType::Password)
     .mask_toggle() // Shows toggle button to reveal password
 ```
+
+While the value is masked, the input keeps it out of the clipboard and out of
+the selection: Copy and Cut do nothing (and are disabled in the context menu),
+a word-wise delete takes everything before the caret, and a double click
+selects the whole value instead of one word. Paste and Select All keep working,
+and revealing the value with `mask_toggle` restores all of them.
 
 ### Input Sizes
 
@@ -158,7 +164,7 @@ let input = cx.new(|cx|
 );
 
 // Number with thousands separator
-use gpui_component::input::MaskPattern;
+use gpui_kit::component::input::MaskPattern;
 
 let input = cx.new(|cx|
     InputState::new(window, cx)

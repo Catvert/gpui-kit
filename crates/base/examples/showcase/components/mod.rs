@@ -1,3 +1,4 @@
+pub(super) use super::example_rgb;
 use super::*;
 
 mod accordion;
@@ -17,6 +18,8 @@ mod editor;
 mod hover_card;
 mod input;
 mod link;
+mod nav_stack;
+pub(super) use nav_stack::{ShowcasePage, slide};
 mod number_input;
 mod otp_input;
 mod pagination;
@@ -34,6 +37,8 @@ mod switch;
 mod table;
 mod tabs;
 mod text_selection;
+mod text_view;
+pub(super) use text_view::MARKDOWN as TEXT_VIEW_MARKDOWN;
 mod textarea;
 mod toast;
 mod toggle;

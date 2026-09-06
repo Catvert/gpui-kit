@@ -37,6 +37,7 @@ mod list_settings;
 mod macos_accessibility;
 mod measure;
 pub mod motion;
+mod nav_stack;
 mod number_input;
 mod otp_input;
 mod pagination;
@@ -47,8 +48,10 @@ mod progress;
 mod radio;
 mod radio_group;
 mod resizable;
+mod scrollable_mask;
 mod scrollbar;
 mod select;
+mod selectable_text;
 mod sheet;
 pub mod slider;
 mod state_style;
@@ -56,6 +59,7 @@ mod styled;
 mod switch;
 mod table;
 mod tabs;
+pub mod text;
 mod text_boundary;
 mod text_selection;
 mod theme;
@@ -65,6 +69,7 @@ mod toggle;
 mod toggle_group;
 mod tooltip;
 mod tree;
+mod undo_history;
 mod virtual_list;
 
 pub use accordion::{Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger};
@@ -99,7 +104,7 @@ pub use focus_trap::FocusTrapElement;
 pub use focus_trap::active_focus_trap;
 pub use geometry::*;
 pub use global_state::{DeferredPopover, GlobalState};
-pub use history::{History, HistoryItem};
+pub use history::History;
 pub use hover_card::{HoverCard, HoverCardState};
 pub use index_path::IndexPath;
 pub use input::{Editor, Input, InputBase, InputStyles, Textarea};
@@ -111,12 +116,19 @@ pub use macos_accessibility::install_window_hit_test_forwarder;
 #[doc(hidden)]
 pub use measure::measurement_enabled;
 pub use measure::{Measure, measure, measure_if};
-pub use motion::{Interpolate, Transition, TransitionId, transition};
+pub use motion::{
+    Discrete, DiscreteError, Easing, EasingError, Interpolate, IterationCount, Keyframe,
+    KeyframeError, Keyframes, LinearStop, MotionPhase, MotionReveal, MotionStatus, MotionTransform,
+    MotionValue, PlaybackDirection, Presence, PresencePhase, PresenceSample, SignedDuration,
+    Spring, SpringError, Stagger, StaggerOrigin, StepPosition, Timing, TimingSample, Transition,
+    TransitionId, animate_keyframes, spring, transition, transition_with_status,
+};
+pub use nav_stack::{NavMotion, NavOperation, NavPage, NavStack, NavStackEvent, NavStackState};
 pub use number_input::{
     Decrement, Increment, NumberInput, NumberInputEvent, NumberInputText, NumberStep, StepAction,
     step_value,
 };
-pub use otp_input::{OtpInput, OtpState};
+pub use otp_input::{OtpEvent, OtpInput, OtpState};
 pub use pagination::{Pagination, PaginationItem, PaginationState};
 pub use popover::{Popover, PopoverState};
 pub use popup::{POPUP_PRIORITY, Popup};
@@ -130,11 +142,13 @@ pub use resizable::{
     ResizablePanel, ResizablePanelEvent, ResizablePanelGroup, ResizableState, ResizeHandleContext,
     ResizeHandleRenderer, h_resizable, resizable_panel, v_resizable,
 };
+pub use scrollable_mask::ScrollableMask;
 pub use scrollbar::{
     Scrollbar, ScrollbarAxis, ScrollbarEntrance, ScrollbarHandle, ScrollbarMode, ScrollbarMotion,
     ScrollbarStyles, ScrollbarThumbStyle, ScrollbarTrackStyle,
 };
 pub use select::Select;
+pub use selectable_text::SelectableText;
 pub use sheet::Sheet;
 pub use slider::{Slider, SliderIndicator, SliderThumb, SliderTrack};
 pub use state_style::StateStyle;
@@ -146,13 +160,17 @@ pub use switch::{
 };
 pub use table::{Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow};
 pub use tabs::{Tab, TabStyles, Tabs};
+pub use text::{
+    MarkdownExtensions, MarkdownNode, MarkdownPlugin, SelectionFormat, TableData, Text, TextView,
+    TextViewDefaults, TextViewPlugin, TextViewState, TextViewStyle, html, markdown,
+};
 pub use text_selection::{
     TextSelection, TextSelectionContentKey, TextSelectionCoverage, TextSelectionEndpoint,
     TextSelectionEvent, TextSelectionHandle, TextSelectionLayer, TextSelectionProjection,
     TextSelectionRegistration, TextSelectionRun, TextSelectionScopeId, TextSelectionSnapshot,
     TextSelectionWindowPoints,
 };
-pub use theme::{ResizableTheme, ScrollbarTheme, Theme};
+pub use theme::{ResizableTheme, ScrollbarTheme, Theme, ThemeAppearance};
 pub use theme_tokens::{
     ColorTokens, RadiusTokens, SemanticThemeTokens, ShadowTokens, SpacingTokens, TextStyleToken,
     TypographyTokens,
@@ -167,6 +185,7 @@ pub use tooltip::{Tooltip, TooltipOverlay, TooltipPositioner, TooltipRequest, To
 pub use tree::{Tree, TreeEntry, TreeEntryState, TreeEvent, TreeItem, TreeState};
 #[doc(hidden)]
 pub use tree::{init as init_tree, key_context as tree_key_context};
+pub use undo_history::UndoHistory;
 #[doc(hidden)]
 pub use virtual_list::virtual_list;
 pub use virtual_list::{VirtualList, VirtualListScrollHandle, h_virtual_list, v_virtual_list};
@@ -187,4 +206,5 @@ pub fn init(cx: &mut App) {
     number_input::init(cx);
     input::init(cx);
     tree::init(cx);
+    text::init(cx);
 }

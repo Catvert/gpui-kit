@@ -126,7 +126,7 @@
 //! nothing at all. A renderer returns elements and base attaches the drag
 //! sources, drop hit-testing, focus and keyboard handling to the elements it
 //! got back, so appearance is not a set of overrides on top of a default look —
-//! there is no default look. `crates/ui/src/dock` and
+//! there is no default look. `crates/component/src/dock` and
 //! `crates/base/examples/showcase/components/dock.rs` are two unrelated
 //! appearances over one behavior.
 //!
@@ -166,7 +166,7 @@
 //!
 //! `crates/base/examples/showcase/components/dock.rs` is that program in full,
 //! renderers included — run it with `cargo run -p gpui-base dock`.
-//! `crates/ui/src/dock` is the production skin over the same seam.
+//! `crates/component/src/dock` is the production skin over the same seam.
 
 mod active;
 mod dock_area;
@@ -195,7 +195,9 @@ pub use layout::{
 };
 pub use panel::{Panel, PanelEvent, PanelView};
 pub use registry::{PanelBuildContext, PanelRegistry, register_panel};
-pub use state::{DockAreaState, DockPlacement, DockState, PanelInfo, PanelState, TileMeta};
+pub use state::{
+    DockAreaState, DockPlacement, DockRegions, DockState, PanelInfo, PanelState, TileMeta,
+};
 /// Both halves of the persistence seam. `PaneTree::to_state` reads panel
 /// properties through `PanelSource`; `PaneTree::from_state` turns persisted
 /// leaves back into panels through `PanelBuilder`. Exporting only the first

@@ -164,6 +164,15 @@ impl ResizableState {
         }
 
         if changed {
+            // The owner's sizes are a **share**, not a measurement. They are
+            // read back from disk, or built against a window that is not this
+            // one, and the container they describe is seldom the container
+            // drawn: the first frame already scales them to it. But the owner
+            // hands them over again on every reconcile — a tab switch is one —
+            // and the container has not moved, so nothing re-scaled them: a
+            // 420px column drawn at 508px snapped back to 420px on the first
+            // click in a tab bar, and the flexible slot took the rest.
+            self.adjust_to_container_size(cx);
             cx.notify();
         }
     }
@@ -478,6 +487,25 @@ mod tests {
     }
 
     #[gpui::test]
+    fn adopted_sizes_are_scaled_to_the_container_already_measured(cx: &mut TestAppContext) {
+        let state = cx.update(|cx| cx.new(|_| ResizableState::default()));
+        cx.update(|cx| {
+            state.update(cx, |state, cx| {
+                state.bounds.size = size(px(600.), px(100.));
+                state.sync_panels_count(gpui::Axis::Horizontal, 2, cx);
+                // The owner describes a 400px container: the shares are what
+                // it means, and the container drawn is what they apply to.
+                state.adopt_sizes(&[Some(px(100.)), Some(px(300.))], cx);
+                assert_eq!(state.sizes(), &vec![px(150.), px(450.)]);
+                // Handed over again unchanged, as every reconcile does: the
+                // measurement does not move.
+                state.adopt_sizes(&[Some(px(100.)), Some(px(300.))], cx);
+                assert_eq!(state.sizes(), &vec![px(150.), px(450.)]);
+            });
+        });
+    }
+
+    #[gpui::test]
     fn group_measures_panels_and_programmatic_resize_uses_drag_rules(cx: &mut TestAppContext) {
         let (cx, state, _) = harness(cx);
         let first = cx.debug_bounds("first-panel").unwrap();
@@ -526,5 +554,32 @@ mod tests {
             assert_eq!(state.sizes(), &vec![px(220.), px(180.)]);
         });
         assert_eq!(resizes.get(), 1);
+    }
+
+    struct SizedGroupHarness;
+
+    impl Render for SizedGroupHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(400.))
+                .h(px(100.))
+                .child(
+                    h_resizable("sized-resizable").size(px(40.)).child(
+                        resizable_panel()
+                            .child(div().size_full().debug_selector(|| "sized-panel".into())),
+                    ),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn a_group_size_binds_the_cross_axis(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| SizedGroupHarness);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let panel = cx.debug_bounds("sized-panel").unwrap();
+        assert_eq!(panel.size.width, px(400.));
+        assert_eq!(panel.size.height, px(40.));
     }
 }

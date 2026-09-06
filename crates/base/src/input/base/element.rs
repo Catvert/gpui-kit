@@ -51,6 +51,13 @@ pub(super) const RIGHT_MARGIN: Pixels = px(10.);
 pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(10.);
 const FOLD_ICON_WIDTH: Pixels = px(14.);
 const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
+/// The strip an application's gutter markers get, at the gutter's right edge.
+///
+/// It is the margin that already separates the numbers from the text, and not a
+/// column of its own: reserving one would push the text ten pixels further from
+/// the numbers whether anything was ever marked or not, and the space is empty
+/// as it stands.
+const GUTTER_MARK_WIDTH: Pixels = LINE_NUMBER_RIGHT_MARGIN;
 const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
 const FOLD_CHEVRON_RIGHT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
 const FOLD_CHEVRON_DOWN_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>"#;
@@ -447,7 +454,7 @@ impl<M: InputModeKind> TextElement<M> {
         last_layout: &LastLayout,
         bounds: &mut Bounds<Pixels>,
         scroll_size: Size<Pixels>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut App,
     ) -> (Option<Bounds<Pixels>>, Point<Pixels>, Option<usize>) {
         let state = self.state.read(cx);
@@ -576,7 +583,34 @@ impl<M: InputModeKind> TextElement<M> {
             }
 
             // cursor bounds
-            let cursor_height = 0.85 * line_height;
+            //
+            // A block caret takes the whole line and one character's advance:
+            // it stands in for a modal editor's block where there is no
+            // character to paint one over. The advance is the font's own, read
+            // from the style the editor was laid out under.
+            //
+            // A **digit's** advance and not an `em`'s, which is the `m`'s: in a
+            // monospace font the two are the same cell, and in a proportional
+            // one the `m` is the widest letter there is — a block as wide as it
+            // is tall, sitting on an empty line, which reads as a white square
+            // rather than as a cursor.
+            let block = state.caret_block.is_some();
+            let cursor_height = if block {
+                line_height
+            } else {
+                0.85 * line_height
+            };
+            let cursor_width = if block {
+                let style = window.text_style();
+                let font_size = style.font_size.to_pixels(window.rem_size());
+                let font = window.text_system().resolve_font(&style.font());
+                window
+                    .text_system()
+                    .ch_advance(font, font_size)
+                    .unwrap_or(CURSOR_WIDTH)
+            } else {
+                CURSOR_WIDTH
+            };
 
             // Match the caret to the deferred scroll target (applied below) that
             // the text paints at; otherwise the caret follows the cursor-scroll
@@ -599,7 +633,7 @@ impl<M: InputModeKind> TextElement<M> {
                     cursor_x,
                     bounds.top() + cursor_pos.y + ((line_height - cursor_height) / 2.),
                 ),
-                size(CURSOR_WIDTH, cursor_height),
+                size(cursor_width, cursor_height),
             ))
         };
 
@@ -663,10 +697,13 @@ impl<M: InputModeKind> TextElement<M> {
                 last_layout,
                 false,
             );
+            // The end of a range closes the row it lands on: a range ending exactly on a soft
+            // wrap boundary highlights to the end of that row instead of opening a zero-width
+            // sliver at the start of the next one.
             let line_cursor_end = line.position_for_index(
                 end_ix.saturating_sub(prev_lines_offset),
                 last_layout,
-                false,
+                true,
             );
 
             if line_cursor_start.is_some() || line_cursor_end.is_some() {
@@ -822,14 +859,18 @@ impl<M: InputModeKind> TextElement<M> {
         &self,
         last_layout: &LastLayout,
         bounds: &mut Bounds<Pixels>,
-        window: &mut Window,
         cx: &mut App,
     ) -> Option<Path<Pixels>> {
         let state = self.state.read(cx);
-        if !state.focus_handle.is_focused(window) {
-            return None;
-        }
-
+        // The selection is laid out whether or not the input has the focus.
+        //
+        // Losing the focus does not cancel it — see `on_blur`, which says so:
+        // a menu that copies takes the focus handle, and the text has to still
+        // be selected when the menu's Copy runs. Refusing to *draw* it there
+        // undid that on the one gesture it was meant for: right-clicking a
+        // selection showed the menu over a text that no longer looked
+        // selected. What is painted instead, at the paint site, is the dimmed
+        // tone every editor uses for an inactive selection.
         let mut selected_range = state.selected_range;
         if let Some(ime_marked_range) = &state.ime_marked_range {
             if !ime_marked_range.is_empty() {
@@ -1261,6 +1302,59 @@ impl<M: InputModeKind> TextElement<M> {
         icon_layout
     }
 
+    /// Lay out the application's gutter markers, one per visible buffer line.
+    ///
+    /// The same walk the line numbers take, and it has to be: `offset_y` is
+    /// accumulated from each line's `wrapped_lines`, so a wrapped line pushes
+    /// its marker down by exactly what it pushes its number down by. Deriving
+    /// the position from the line index instead would drift the moment a line
+    /// wrapped or a fold closed — silently, and only on the files long enough
+    /// to do either.
+    fn layout_gutter_marks(
+        &self,
+        origin_x: Pixels,
+        bounds: &Bounds<Pixels>,
+        last_layout: &LastLayout,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<AnyElement> {
+        let Some(render) = M::gutter_mark_renderer(self.state.read(cx)) else {
+            return Vec::new();
+        };
+        // The strip's right edge is the gutter's, so what an application paints
+        // there can touch the text. A gutter with no room for it — no numbers,
+        // no folding — gets no markers rather than markers laid out to the left
+        // of where it starts.
+        if last_layout.line_number_width < GUTTER_MARK_WIDTH {
+            return Vec::new();
+        }
+        let column_x = origin_x + last_layout.line_number_width - GUTTER_MARK_WIDTH;
+        let line_height = last_layout.line_height;
+        let mut offset_y = last_layout.visible_top;
+        let mut marks = Vec::new();
+
+        for (line, &buffer_line) in last_layout
+            .lines
+            .iter()
+            .zip(last_layout.visible_buffer_lines.iter())
+        {
+            let height = line_height * line.wrapped_lines.len() as f32;
+            if let Some(mark) = render(buffer_line) {
+                let mut mark = mark;
+                mark.prepaint_as_root(
+                    point(column_x, bounds.origin.y + offset_y),
+                    size(GUTTER_MARK_WIDTH, height).into(),
+                    window,
+                    cx,
+                );
+                marks.push(mark);
+            }
+            offset_y += height;
+        }
+
+        marks
+    }
+
     /// Paint fold icons using prepaint hitboxes.
     ///
     /// This handles:
@@ -1310,6 +1404,7 @@ impl<M: InputModeKind> TextElement<M> {
 
             let line_layout = LineLayout::new()
                 .lines(smallvec::smallvec![shaped_line])
+                .with_background(has_background(line_runs))
                 .with_whitespaces(whitespace_indicators);
             return vec![line_layout];
         }
@@ -1318,6 +1413,7 @@ impl<M: InputModeKind> TextElement<M> {
         if state.text.len() == 0 {
             let placeholder_text = display_text.to_string();
             let mut placeholder_lines = SmallVec::new();
+            let mut line_has_background = false;
 
             for (line, line_runs) in placeholder_line_runs(&placeholder_text, runs) {
                 let shaped_line = window.text_system().shape_line(
@@ -1326,12 +1422,14 @@ impl<M: InputModeKind> TextElement<M> {
                     &line_runs,
                     None,
                 );
+                line_has_background |= has_background(&line_runs);
                 placeholder_lines.push(shaped_line);
             }
 
             // Keep placeholder lines in a single layout to stay parallel with visible_* metadata.
             let line_layout = LineLayout::new()
                 .lines(placeholder_lines)
+                .with_background(line_has_background)
                 .with_whitespaces(whitespace_indicators);
             return vec![line_layout];
         }
@@ -1352,6 +1450,7 @@ impl<M: InputModeKind> TextElement<M> {
             debug_assert_eq!(line_item.len(), line_text.len());
 
             let mut wrapped_lines: SmallVec<[ShapedLine; 1]> = SmallVec::with_capacity(1);
+            let mut line_has_background = false;
 
             for range in &line_item.wrapped_lines {
                 let line_runs = runs_for_range(runs, run_offset, &range);
@@ -1372,6 +1471,7 @@ impl<M: InputModeKind> TextElement<M> {
                     .text_system()
                     .shape_line(sub_line, font_size, &line_runs, None);
 
+                line_has_background |= has_background(&line_runs);
                 wrapped_lines.push(shaped_line);
             }
 
@@ -1390,6 +1490,7 @@ impl<M: InputModeKind> TextElement<M> {
             let line_layout = LineLayout::new()
                 .lines(wrapped_lines)
                 .wrap_indent(wrap_indent)
+                .with_background(line_has_background)
                 .with_whitespaces(whitespace_indicators.clone());
             lines.push(line_layout);
 
@@ -1575,6 +1676,8 @@ pub(super) struct PrepaintState {
     bounds: Bounds<Pixels>,
     /// Fold icon layout data
     fold_icon_layout: FoldIconLayout,
+    /// The application's gutter markers, already prepainted in their column.
+    gutter_marks: Vec<AnyElement>,
     // Inline completion rendering data
     /// Shaped ghost lines to paint after cursor row (completion lines 2+)
     ghost_lines: Vec<ShapedLine>,
@@ -1982,7 +2085,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         last_layout.cursor_bounds = cursor_bounds;
 
         let search_match_paths = self.layout_search_matches(&last_layout, &mut bounds, cx);
-        let selection_path = self.layout_selections(&last_layout, &mut bounds, window, cx);
+        let selection_path = self.layout_selections(&last_layout, &mut bounds, cx);
         let hover_highlight_path = self.layout_hover_highlight(&last_layout, &mut bounds, cx);
         let document_color_paths =
             self.layout_document_colors(&document_colors, &last_layout, &bounds, cx);
@@ -2052,6 +2155,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             )));
         let fold_icon_layout =
             self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
+        let gutter_marks = self.layout_gutter_marks(original_x, &bounds, &last_layout, window, cx);
 
         PrepaintState {
             bounds,
@@ -2068,6 +2172,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             document_color_paths,
             indent_guides_path,
             fold_icon_layout,
+            gutter_marks,
             ghost_first_line,
             ghost_lines,
             ghost_lines_height,
@@ -2084,7 +2189,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (focus_handle, show_cursor, disabled, selected_range, editor_style, editor_paddings) = {
+        let (
+            focus_handle,
+            show_cursor,
+            disabled,
+            selected_range,
+            editor_style,
+            editor_paddings,
+            caret_block,
+        ) = {
             let state = self.state.read(cx);
             (
                 state.focus_handle.clone(),
@@ -2093,9 +2206,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 state.selected_range,
                 state.editor_style.clone(),
                 state.editor_paddings,
+                state.caret_block,
             )
         };
         let focused = focus_handle.is_focused(window);
+        // A block caret is painted in the colour the application asked for; the
+        // bar keeps the theme's.
+        let caret_colour = caret_block.unwrap_or(editor_style.caret);
         let bounds = prepaint.bounds;
         let text_align = prepaint.last_layout.text_align;
 
@@ -2145,6 +2262,51 @@ impl<M: InputModeKind> Element for TextElement<M> {
             }
         }
 
+        // Keep scrollbar offset always be positive，Start from the left position
+        let scroll_offset = if text_align == TextAlign::Right {
+            (prepaint.scroll_size.width - prepaint.bounds.size.width).max(px(0.))
+        } else if text_align == TextAlign::Center {
+            (prepaint.scroll_size.width - prepaint.bounds.size.width)
+                .half()
+                .max(px(0.))
+        } else {
+            px(0.)
+        };
+
+        // Paint glyph backgrounds
+        //
+        // gpui's `paint` only draws glyphs, underlines, and strikethroughs, so decoration
+        // backgrounds need their own pass. It runs ahead of the indent guides, selections,
+        // and text so a highlighted range sits under them instead of covering them.
+        let mut offset_y = invisible_top_padding;
+        for (line, &buffer_line) in prepaint
+            .last_layout
+            .lines
+            .iter()
+            .zip(prepaint.last_layout.visible_buffer_lines.iter())
+        {
+            let p = point(
+                origin.x + prepaint.last_layout.line_number_width + scroll_offset,
+                origin.y + offset_y,
+            );
+
+            line.paint_background(
+                p,
+                line_height,
+                text_align,
+                Some(prepaint.last_layout.content_width),
+                window,
+                cx,
+            );
+
+            offset_y += line.size(line_height).height;
+
+            // Ghost lines shift every later line down.
+            if Some(buffer_line) == prepaint.current_row {
+                offset_y += prepaint.ghost_lines_height;
+            }
+        }
+
         // Paint indent guides
         if let Some(path) = prepaint.indent_guides_path.take() {
             window.paint_path(path, editor_style.border.opacity(0.85));
@@ -2165,7 +2327,16 @@ impl<M: InputModeKind> Element for TextElement<M> {
             }
 
             if let Some(path) = prepaint.selection_path.take() {
-                window.paint_path(path, editor_style.selection);
+                // Dimmed when the focus is elsewhere: the selection is still
+                // there and still copyable, and saying so is what the menus
+                // that take the focus need.
+                let focused = self.state.read(cx).focus_handle.is_focused(window);
+                let color = if focused {
+                    editor_style.selection
+                } else {
+                    secondary_selection
+                };
+                window.paint_path(path, color);
             }
 
             // Paint hover highlight
@@ -2184,17 +2355,6 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let mut offset_y = invisible_top_padding;
         let ghost_lines = &prepaint.ghost_lines;
         let has_ghost_lines = !ghost_lines.is_empty();
-
-        // Keep scrollbar offset always be positive，Start from the left position
-        let scroll_offset = if text_align == TextAlign::Right {
-            (prepaint.scroll_size.width - prepaint.bounds.size.width).max(px(0.))
-        } else if text_align == TextAlign::Center {
-            (prepaint.scroll_size.width - prepaint.bounds.size.width)
-                .half()
-                .max(px(0.))
-        } else {
-            px(0.)
-        };
 
         // Track the y-position of the cursor row for positioning the first line suffix
         let mut cursor_row_y = None;
@@ -2261,7 +2421,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         // Paint blinking cursor
         if focused && show_cursor {
             if let Some(cursor_bounds) = prepaint.cursor_bounds_with_scroll() {
-                window.paint_quad(fill(cursor_bounds, editor_style.caret));
+                window.paint_quad(fill(cursor_bounds, caret_colour));
             }
         }
 
@@ -2317,6 +2477,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     offset_y += prepaint.ghost_lines_height;
                 }
             }
+        }
+
+        // Paint the application's gutter markers. After the gutter background
+        // and before the fold icons, which are drawn on hover and would
+        // otherwise come out underneath their own column's neighbour.
+        for mark in prepaint.gutter_marks.iter_mut() {
+            mark.paint(window, cx);
         }
 
         // Paint fold icons (only visible on hover or for current line)
@@ -2531,6 +2698,12 @@ fn split_run_for_ime_underline(
     .into_iter()
     .filter(|run| run.len > 0)
     .collect()
+}
+
+/// Whether any of these runs paints a glyph background, used to skip the background
+/// paint pass for lines without highlights.
+fn has_background(runs: &[TextRun]) -> bool {
+    runs.iter().any(|run| run.background_color.is_some())
 }
 
 fn split_runs_by_bg_segments(

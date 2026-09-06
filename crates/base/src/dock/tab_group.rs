@@ -5,7 +5,7 @@ use std::{rc::Rc, sync::Arc};
 use gpui::{
     AnyElement, AnyView, App, Bounds, Context, Div, DragMoveEvent, Empty, EventEmitter,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
-    Render, Stateful, WeakEntity, Window, div, prelude::FluentBuilder as _,
+    Render, Stateful, Styled as _, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::Placement;
@@ -18,6 +18,7 @@ use super::{
     },
     layout::{InsertTarget, NodeId, PanelId},
     panel::PanelView,
+    state::DockPlacement,
 };
 
 /// Behavior a tab group cannot carry out on its own.
@@ -64,6 +65,7 @@ pub struct TabGroupConstraints {
     dock_locked: bool,
     collapsed: bool,
     closable: bool,
+    placement: DockPlacement,
 }
 
 impl TabGroupConstraints {
@@ -75,6 +77,7 @@ impl TabGroupConstraints {
             dock_locked: true,
             collapsed: false,
             closable: false,
+            placement: DockPlacement::Center,
         }
     }
 
@@ -87,6 +90,7 @@ impl TabGroupConstraints {
             dock_locked: false,
             collapsed: false,
             closable: true,
+            placement: DockPlacement::Center,
         }
     }
 
@@ -109,6 +113,23 @@ impl TabGroupConstraints {
         self
     }
 
+    /// The region this group sits in.
+    ///
+    /// A fact about the container and not about the group, which is why it
+    /// arrives with the rest of them: a skin cannot work it out on its own —
+    /// the trees are the area's — and the chrome an edge wants is not the
+    /// chrome the centre wants. An application whose side zones are chosen
+    /// from a rail of its own has no use for a strip of tabs repeating it.
+    pub fn placement(mut self, placement: DockPlacement) -> Self {
+        self.placement = placement;
+        self
+    }
+
+    /// The region this group sits in — see [`Self::placement`].
+    pub fn region(&self) -> DockPlacement {
+        self.placement
+    }
+
     /// Whether nothing sits beside this group in its tree.
     pub fn is_alone(&self) -> bool {
         self.alone
@@ -128,7 +149,7 @@ impl TabGroupConstraints {
         self.collapsed
     }
 
-    pub fn can_close(&self) -> bool {
+    pub fn is_closable(&self) -> bool {
         self.closable
     }
 }
@@ -220,8 +241,8 @@ impl TabGroup {
     /// Mirrors the old `TabPanel::closable`: the container must permit it, the
     /// group must have somewhere to go, and the displayed panel must itself be
     /// closable.
-    pub fn can_close(&self, cx: &App) -> bool {
-        self.constraints.can_close()
+    pub fn is_closable(&self, cx: &App) -> bool {
+        self.constraints.is_closable()
             && self.draggable(cx)
             && self
                 .active_panel(cx)
@@ -244,7 +265,7 @@ impl TabGroup {
     /// Ask the container to close `panel`. Nothing happens for a panel that is
     /// not in this group, or when either the group or the panel refuses.
     pub fn close_panel(&mut self, panel: PanelId, cx: &mut Context<Self>) {
-        if !self.constraints.can_close() {
+        if !self.constraints.is_closable() {
             return;
         }
         // A dock's last group has nowhere to go and must stay.
@@ -274,12 +295,13 @@ impl TabGroup {
 
         TabGroupContext {
             node: self.node,
+            placement: self.constraints.region(),
             panels: self.panels.clone(),
             active_panel: self.active_panel(cx),
             active_ix: self.active_ix,
             zoomed: self.zoomed,
             collapsed: self.constraints.is_collapsed(),
-            can_close: self.can_close(cx),
+            closable: self.is_closable(cx),
             locked: self.is_locked(),
             draggable: self.draggable(cx),
             droppable: self.droppable(),
@@ -522,13 +544,17 @@ impl TabGroup {
         cx: &mut Context<Self>,
     ) {
         let bounds = drag.bounds;
-        if !bounds.contains(&drag.event.position) {
+        let dragged = drag.drag(cx);
+        // A panel that does not belong in this region resolves nothing, so
+        // there is nothing to draw and nothing a release can land on. Said
+        // here and not at the drop alone: a drop refused under an indicator
+        // that promised it would land is a gesture that looks as if it worked.
+        if !bounds.contains(&drag.event.position) || !dragged.accepts(self.constraints.region()) {
             self.clear_drop_indicator(cx);
             return;
         }
 
         let placement = split_placement_at(bounds, drag.event.position);
-        let dragged = drag.drag(cx);
         // The placeholder flies in from wherever the preview currently is.
         let source = DropPlaceholderBounds::new(
             drag.event.position - dragged.drag_offset() - bounds.origin,
@@ -636,6 +662,14 @@ impl TabGroup {
         cx: &mut Context<Self>,
     ) {
         let indicator = self.drop_indicator.take();
+        // The region has the last word, and it has to be said again here: the
+        // tab bar supplies its own slot without ever consulting an indicator,
+        // so a panel refused over the content was still accepted onto the
+        // strip of tabs above it.
+        if !drag.accepts(self.constraints.region()) {
+            cx.notify();
+            return;
+        }
         let placement = match ix {
             Some(_) => None,
             None => indicator.and_then(|indicator| indicator.placement()),
@@ -695,12 +729,40 @@ impl Render for TabGroup {
 
         renderer
             .frame(&context, window, cx)
+            // Structure, applied around whatever the renderer returns.
+            //
+            // A column, and not a `div`: gpui's default display is Block, and
+            // in block layout a child's `flex_grow` is ignored -- the content
+            // region below the tab bar resolves to zero height, because its
+            // only descendant is the panel view, positioned absolutely and
+            // contributing no content height. So a renderer that returned a
+            // plain frame got a group that drew its tabs and nothing else, at
+            // whatever width its tabs happened to be.
+            .flex()
+            .flex_col()
+            .size_full()
+            .overflow_hidden()
             .track_focus(&focus_handle)
             .tab_group()
             .child(renderer.render_tab_bar(&context, window, cx))
             .child(
                 renderer
                     .content_frame(&context, window, cx)
+                    // The region below the tab bar takes the rest of the
+                    // group -- except in a collapsed one, which is a strip of
+                    // tabs with no content and must claim no space at all.
+                    .flex()
+                    .flex_col()
+                    .when(!context.is_collapsed(), |this| this.flex_1())
+                    // A flex item's `min-height` is `auto`, so a column that
+                    // grows to fill the group is still floored by the height
+                    // its content wants. A panel holding a virtualized list
+                    // measured itself against every row rather than the region
+                    // it was given: the clip was right, so it looked correct,
+                    // and the list built rows nobody could see. Flooring it at
+                    // zero lets the region win.
+                    .min_h(px(0.))
+                    .overflow_hidden()
                     // Both drag kinds hang off `droppable` alone. The old
                     // `TabPanel` nested a second guard inside the same
                     // droppable test for the host-item handlers, asking
@@ -747,6 +809,7 @@ type DropItemHandler = Rc<dyn Fn(AnyDrag, Option<Placement>, &mut Window, &mut A
 #[derive(Clone)]
 pub struct TabGroupContext {
     node: NodeId,
+    placement: DockPlacement,
     panels: Vec<Arc<dyn PanelView>>,
     active_panel: Option<Arc<dyn PanelView>>,
     active_ix: usize,
@@ -755,7 +818,7 @@ pub struct TabGroupContext {
     locked: bool,
     draggable: bool,
     droppable: bool,
-    can_close: bool,
+    closable: bool,
     drop_indicator: Option<DropIndicator>,
     on_select_tab: SelectTabHandler,
     on_close: ClosePanelHandler,
@@ -769,6 +832,11 @@ impl TabGroupContext {
     /// group in a drag payload or a drop target.
     pub fn node(&self) -> NodeId {
         self.node
+    }
+
+    /// The region this group sits in, for a skin whose chrome differs by edge.
+    pub fn placement(&self) -> DockPlacement {
+        self.placement
     }
 
     /// Every panel in the group, in tab order — visible or not. A skin filters
@@ -801,8 +869,8 @@ impl TabGroupContext {
 
     /// Whether closing the displayed panel is allowed at all, so a skin knows
     /// whether to offer a Close control.
-    pub fn can_close(&self) -> bool {
-        self.can_close
+    pub fn is_closable(&self) -> bool {
+        self.closable
     }
 
     pub fn is_locked(&self) -> bool {
@@ -834,7 +902,7 @@ impl TabGroupContext {
     pub fn drag_panel(&self, ix: usize, cx: &App) -> Option<DragPanel> {
         self.panels
             .get(ix)
-            .map(|panel| DragPanel::new(panel.panel_id(cx), self.node))
+            .map(|panel| DragPanel::new(panel.panel_id(cx), self.node).allowing(panel.regions(cx)))
     }
 
     /// A panel dropped on the tab bar. `ix` names the slot it lands in, or
@@ -875,6 +943,9 @@ pub trait TabGroupRenderer: 'static {
     ///
     /// Identified rather than plain, so a skin can add a role, a tooltip, or
     /// scroll tracking; `Stateful<Div>` does everything base needs from it.
+    /// Appearance only. The group is laid out as a column that fills its slot
+    /// around whatever this returns, because a group that does not is a strip
+    /// of tabs with no content under it.
     fn frame(&self, group: &TabGroupContext, window: &mut Window, cx: &mut App) -> Stateful<Div> {
         div().id("tab-group")
     }
@@ -941,9 +1012,10 @@ impl TabGroupRenderer for BareTabGroup {
 mod tests {
     use std::cell::RefCell;
 
+    use crate::dock::DockRegions;
     use gpui::{
         AppContext as _, Entity, Modifiers, MouseButton, StatefulInteractiveElement as _,
-        Styled as _, TestAppContext, VisualTestContext, point, px, size,
+        TestAppContext, VisualTestContext, point, px, size,
     };
 
     use super::*;
@@ -1209,6 +1281,41 @@ mod tests {
         });
         cx.run_until_parked();
 
+        assert_eq!(
+            *events.borrow(),
+            vec!["drop panel 99 from 7 into tabs 1 at None activate=true"]
+        );
+    }
+
+    /// A panel that does not belong in this region lands nowhere, and it is
+    /// refused on the tab bar as well as over the content: the bar supplies
+    /// its own slot without ever consulting the indicator the content area
+    /// declined to draw.
+    #[gpui::test]
+    fn a_panel_that_refuses_this_region_is_not_dropped(cx: &mut TestAppContext) {
+        let log = log_of();
+        let (group, _panels, cx) = build_group(&log, &["a"], cx);
+        let events = record_events(&group, cx);
+
+        // The group is in the centre; the panel says it belongs to the edges.
+        let refused =
+            DragPanel::new(PanelId::from_u64(99), elsewhere()).allowing(DockRegions::EDGES);
+        cx.update(|_, cx| {
+            group.update(cx, |group, cx| {
+                group.on_drop(&refused, None, true, cx);
+                group.on_drop(&refused, Some(0), true, cx);
+            });
+        });
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty());
+
+        // And one that does belong is dropped as it always was.
+        let welcome =
+            DragPanel::new(PanelId::from_u64(99), elsewhere()).allowing(DockRegions::CENTER);
+        cx.update(|_, cx| {
+            group.update(cx, |group, cx| group.on_drop(&welcome, None, true, cx));
+        });
+        cx.run_until_parked();
         assert_eq!(
             *events.borrow(),
             vec!["drop panel 99 from 7 into tabs 1 at None activate=true"]
@@ -1481,7 +1588,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        assert!(!cx.update(|_, cx| group.read(cx).context(cx).can_close()));
+        assert!(!cx.update(|_, cx| group.read(cx).context(cx).is_closable()));
         assert!(events.borrow().is_empty());
     }
 
@@ -1500,14 +1607,14 @@ mod tests {
                 group.set_constraints(TabGroupConstraints::in_split(true), window, cx)
             })
         });
-        let alone = cx.update(|_, cx| group.read(cx).context(cx).can_close());
+        let alone = cx.update(|_, cx| group.read(cx).context(cx).is_closable());
 
         cx.update(|window, cx| {
             group.update(cx, |group, cx| {
                 group.set_constraints(TabGroupConstraints::in_split(false), window, cx)
             })
         });
-        let beside_a_sibling = cx.update(|_, cx| group.read(cx).context(cx).can_close());
+        let beside_a_sibling = cx.update(|_, cx| group.read(cx).context(cx).is_closable());
 
         assert!(!alone);
         assert!(beside_a_sibling);

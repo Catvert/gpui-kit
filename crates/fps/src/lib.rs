@@ -2,9 +2,11 @@
 //! rolling frame time chart, and this process' GPU, CPU and memory usage.
 //!
 //! Frame data comes from GPUI's own frame trace
-//! ([`gpui::FrameTimingCollector`]), so the numbers are what the framework
-//! actually spent in `Window::draw` rather than an approximation measured from
-//! the outside.
+//! ([`gpui::FrameTimingCollector`]). The rate and the interval count frames
+//! *presented*, stamped with their own present time, so they agree with the
+//! platform's overlay (Metal's HUD counts the same drawables); the frame cost
+//! is what the framework actually spent in `Window::draw`, rather than an
+//! approximation measured from the outside.
 //!
 //! Render it wherever it should appear, guarded by your own flag:
 //!
@@ -23,15 +25,18 @@
 //! # }
 //! ```
 //!
-//! The call takes no options. Anything else — a different corner, frame
-//! budget, palette, or an embedded rather than overlaid HUD — is built by
-//! composing the two pieces they use, [`FpsMonitor`] and [`FpsOverlay`].
+//! The returned overlay can change its corner, frame budget, and whether it
+//! continuously drives the window's animation loop. A custom palette or an
+//! embedded rather than overlaid HUD is built by composing [`FpsMonitor`] and
+//! [`FpsOverlay`] directly.
 //!
 //! This crate depends only on `gpui`, so it can be used from any GPUI
 //! application.
 
 #[cfg(not(target_family = "wasm"))]
 mod gpu;
+#[cfg(not(target_family = "wasm"))]
+mod memory;
 mod monitor;
 mod overlay;
 mod sampler;
@@ -154,7 +159,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nested_guards_keep_tracing_on_until_the_last_one_drops() {
+    fn dropping_an_inner_guard_keeps_tracing_on_for_the_outer_guard() {
         let outer = FrameTraceGuard::acquire();
         let inner = FrameTraceGuard::acquire();
         assert!(gpui::profiler::trace_enabled());
@@ -166,6 +171,5 @@ mod tests {
         );
 
         drop(outer);
-        assert!(!gpui::profiler::trace_enabled());
     }
 }

@@ -1,14 +1,11 @@
-use gpui::{
-    Action, App, AppContext as _, Context, Entity, Focusable, InteractiveElement, IntoElement,
-    ParentElement as _, Render, SharedString, Styled, Subscription, Window,
-    prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     Disableable as _, Sizable, Size, StyledExt,
     button::Button,
-    input::{InputEvent, OtpInput, OtpState},
+    input::{OtpEvent, OtpInput, OtpState},
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use serde::Deserialize;
 
 use crate::{ChangeStorySize, section, story_toolbar};
@@ -58,16 +55,17 @@ impl OtpInputStory {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let otp_state = cx.new(|cx| OtpState::new(6, window, cx).masked(true));
 
-        let _subscriptions = vec![
-            cx.subscribe(&otp_state, |this, state, ev: &InputEvent, cx| match ev {
-                InputEvent::Change => {
-                    let text = state.read(cx).value();
-                    this.otp_value = Some(text.clone());
-                    cx.notify();
-                }
-                _ => {}
-            }),
-        ];
+        let _subscriptions =
+            vec![
+                cx.subscribe(&otp_state, |this, state, ev: &OtpEvent, cx| match ev {
+                    OtpEvent::Complete => {
+                        let text = state.read(cx).value();
+                        this.otp_value = Some(text.clone());
+                        cx.notify();
+                    }
+                    _ => {}
+                }),
+            ];
 
         Self {
             otp_masked: true,
@@ -119,7 +117,7 @@ impl OtpInputStory {
 }
 
 impl Focusable for OtpInputStory {
-    fn focus_handle(&self, cx: &gpui::App) -> gpui::FocusHandle {
+    fn focus_handle(&self, cx: &gpui_kit::App) -> gpui_kit::FocusHandle {
         self.otp_state.focus_handle(cx)
     }
 }

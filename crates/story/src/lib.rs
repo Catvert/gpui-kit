@@ -1,11 +1,5 @@
-use gpui::{
-    Action, Anchor, AnyElement, AnyView, App, AppContext, Bounds, Context, DismissEvent, Div,
-    Entity, EventEmitter, FocusHandle, Focusable, Global, Hsla, InteractiveElement, IntoElement,
-    KeyBinding, ParentElement, Pixels, Render, RenderOnce, SharedString, Size, StyleRefinement,
-    Styled, Window, WindowBounds, WindowKind, WindowOptions, actions, div,
-    prelude::FluentBuilder as _, px, rems, size,
-};
-use gpui_component::{
+use gpui_fps::fps_monitor;
+use gpui_kit::component::{
     ActiveTheme, IconName, Root, Sizable as _, Size as ComponentSize, StyledExt as _,
     TITLE_BAR_HEIGHT, TitleBar, WindowExt,
     button::Button,
@@ -23,7 +17,8 @@ use gpui_component::{
     text::markdown,
     v_flex,
 };
-use gpui_fps::fps_monitor;
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use serde::{Deserialize, Serialize};
 use std::{cell::Cell, rc::Rc, time::Duration};
 
@@ -73,7 +68,8 @@ actions!(
         TabPrev,
         ShowPanelInfo,
         ToggleListActiveHighlight,
-        ToggleFpsMonitor
+        ToggleFpsMonitor,
+        ToggleAppMenuBar
     ]
 );
 
@@ -84,6 +80,12 @@ pub struct AppState {
     /// Whether the window root renders the performance HUD. Toggled from the
     /// title bar's settings menu, read by [`StoryRoot`].
     pub show_fps_monitor: bool,
+    /// Whether the title bar draws the in-window [`AppMenuBar`] instead of the
+    /// window title. Toggled from the title bar's settings menu, read by
+    /// [`AppTitleBar`].
+    ///
+    /// [`AppMenuBar`]: gpui_kit::component::menu::AppMenuBar
+    pub show_app_menu_bar: bool,
     pub(crate) previewing_theme: bool,
 }
 impl AppState {
@@ -91,6 +93,10 @@ impl AppState {
         let state = Self {
             invisible_panels: cx.new(|_| Vec::new()),
             show_fps_monitor: false,
+            // macOS draws the app menus in the system menu bar, so an in-window
+            // menu bar would be a second copy of them. Off by default there,
+            // but still switchable so the component stays demoable on a Mac.
+            show_app_menu_bar: !cfg!(target_os = "macos"),
             previewing_theme: false,
         };
         cx.set_global::<AppState>(state);
@@ -134,7 +140,7 @@ pub fn create_new_window_with_size<F, E>(
     cx.spawn(async move |cx| {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(window_bounds)),
-            window_min_size: Some(gpui::Size {
+            window_min_size: Some(gpui_kit::Size {
                 width: px(480.),
                 height: px(320.),
             }),
@@ -142,9 +148,9 @@ pub fn create_new_window_with_size<F, E>(
             inactive_frame_interval: Some(Duration::from_millis(500)),
             kind: WindowKind::Normal,
             #[cfg(target_os = "linux")]
-            window_background: gpui::WindowBackgroundAppearance::Transparent,
+            window_background: story_window_background(),
             #[cfg(target_os = "linux")]
-            window_decorations: Some(gpui::WindowDecorations::Client),
+            window_decorations: Some(gpui_kit::WindowDecorations::Client),
             ..TitleBar::window_options()
         };
 
@@ -175,7 +181,23 @@ pub fn create_new_window_with_size<F, E>(
     .detach();
 }
 
+#[cfg(target_os = "linux")]
+fn story_window_background() -> gpui_kit::WindowBackgroundAppearance {
+    // The component gallery is a normal application window. Advertising an
+    // alpha surface lets compositors show the desktop through light themes,
+    // even though every story is designed against an opaque canvas.
+    gpui_kit::WindowBackgroundAppearance::Opaque
+}
+
 impl Global for AppState {}
+
+/// Layers the story locales over the component ones. `extend!` takes the
+/// crate as an identifier and stringifies it into the namespace key, so the
+/// layer is bound under its crate name here.
+fn extend_component_translations() {
+    use gpui_kit::component as gpui_component;
+    rust_i18n::extend!(gpui_component);
+}
 
 pub fn init(cx: &mut App) {
     // Try to initialize tracing subscriber, but ignore if already initialized
@@ -204,8 +226,8 @@ pub fn init(cx: &mut App) {
             .try_init();
     }
 
-    rust_i18n::extend!(gpui_component);
-    gpui_component::init(cx);
+    extend_component_translations();
+    gpui_kit::init(cx);
     AppState::init(cx);
     themes::init(cx);
     stories::init(cx);
@@ -248,7 +270,7 @@ pub fn init(cx: &mut App) {
                                 alert.title("About").description(markdown(
                                     "GPUI Component Storybook\n\n\
                                     Version 0.1.0\n\n\
-                                    https://longbridge.github.io/gpui-component",
+                                    https://gpui-kit.com",
                                 ))
                             });
                         });
@@ -346,7 +368,7 @@ impl ParentElement for StorySection {
 }
 
 impl Styled for StorySection {
-    fn style(&mut self) -> &mut gpui::StyleRefinement {
+    fn style(&mut self) -> &mut gpui_kit::StyleRefinement {
         self.base.style()
     }
 }
@@ -365,6 +387,8 @@ impl RenderOnce for StorySection {
                     .gap_4()
                     .child(
                         v_flex()
+                            .min_w_0()
+                            .flex_1()
                             .gap_1()
                             .child(div().font_medium().child(self.title))
                             .when_some(self.description, |this, description| {
@@ -574,12 +598,12 @@ pub(crate) fn story_toolbar(size: ComponentSize) -> StoryToolbar {
 }
 
 pub struct StoryContainer {
-    focus_handle: gpui::FocusHandle,
+    focus_handle: gpui_kit::FocusHandle,
     pub name: SharedString,
     pub title_bg: Option<Hsla>,
     pub description: SharedString,
-    width: Option<gpui::Pixels>,
-    height: Option<gpui::Pixels>,
+    width: Option<gpui_kit::Pixels>,
+    height: Option<gpui_kit::Pixels>,
     story: Option<AnyView>,
     story_klass: Option<SharedString>,
     closable: bool,
@@ -638,12 +662,12 @@ impl StoryContainer {
         view
     }
 
-    pub fn width(mut self, width: gpui::Pixels) -> Self {
+    pub fn width(mut self, width: gpui_kit::Pixels) -> Self {
         self.width = Some(width);
         self
     }
 
-    pub fn height(mut self, height: gpui::Pixels) -> Self {
+    pub fn height(mut self, height: gpui_kit::Pixels) -> Self {
         self.height = Some(height);
         self
     }
@@ -702,7 +726,9 @@ impl StoryState {
         }
 
         match self.story_klass.to_string().as_str() {
+            "AttachmentStory" => story!(AttachmentStory),
             "BreadcrumbStory" => story!(BreadcrumbStory),
+            "BubbleStory" => story!(BubbleStory),
             "ButtonStory" => story!(ButtonStory),
             "CalendarStory" => story!(CalendarStory),
             "SelectStory" => story!(SelectStory),
@@ -710,8 +736,12 @@ impl StoryState {
             "ImageStory" => story!(ImageStory),
             "InputStory" => story!(InputStory),
             "ListStory" => story!(ListStory),
+            "MarkerStory" => story!(MarkerStory),
+            "MessageStory" => story!(MessageStory),
+            "MessageScrollerStory" => story!(MessageScrollerStory),
             "DialogStory" => story!(DialogStory),
             "SeparatorStory" => story!(SeparatorStory),
+            "ShimmerStory" => story!(ShimmerStory),
             "PopoverStory" => story!(PopoverStory),
             "ProgressStory" => story!(ProgressStory),
             "ResizableStory" => story!(ResizableStory),
@@ -829,7 +859,7 @@ impl Panel for StoryContainer {
 
 impl EventEmitter<PanelEvent> for StoryContainer {}
 impl Focusable for StoryContainer {
-    fn focus_handle(&self, _: &App) -> gpui::FocusHandle {
+    fn focus_handle(&self, _: &App) -> gpui_kit::FocusHandle {
         self.focus_handle.clone()
     }
 }
@@ -931,7 +961,7 @@ impl StoryRoot {
 
     fn on_component_palette_confirm(
         &mut self,
-        index: gpui_component::IndexPath,
+        index: gpui_kit::component::IndexPath,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -949,7 +979,7 @@ impl StoryRoot {
     /// that was in force when the palette opened.
     fn on_theme_palette_select(
         &mut self,
-        index: gpui_component::IndexPath,
+        index: gpui_kit::component::IndexPath,
         generation: u64,
         cx: &mut Context<Self>,
     ) {
@@ -1210,16 +1240,25 @@ impl Render for StoryRoot {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn component_story_window_is_opaque() {
+        assert_eq!(
+            super::story_window_background(),
+            gpui_kit::WindowBackgroundAppearance::Opaque
+        );
+    }
+
     #[test]
     fn extends_component_translations_with_story_locales() {
-        rust_i18n::extend!(gpui_component);
+        super::extend_component_translations();
 
         assert_eq!(
-            gpui_component::_rust_i18n_try_translate("fr", "Calendar.month.January"),
+            gpui_kit::component::_rust_i18n_try_translate("fr", "Calendar.month.January"),
             Some("Janvier".into())
         );
         assert_eq!(
-            gpui_component::_rust_i18n_try_translate("en", "Calendar.month.January"),
+            gpui_kit::component::_rust_i18n_try_translate("en", "Calendar.month.January"),
             Some("January".into())
         );
     }
