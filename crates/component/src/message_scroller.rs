@@ -61,6 +61,14 @@ impl MessageScrollerState {
             && !self.list_state.is_scrolled_to_end().unwrap_or(false)
     }
 
+    /// The virtual list underneath, for a caller that moves it itself — a
+    /// wheel it eases rather than lets jump, say. Its offset is the one the
+    /// scrollbar reads and writes, so following the tail resumes as it does
+    /// when the bar is dragged to the end.
+    pub fn list_state(&self) -> &ListState {
+        &self.list_state
+    }
+
     /// Return whether the list is actively following its tail.
     pub fn is_following_tail(&self) -> bool {
         self.list_state.is_following_tail()
