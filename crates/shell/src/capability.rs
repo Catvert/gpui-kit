@@ -30,6 +30,7 @@ pub struct Capabilities {
     execute: ExecuteGrant,
     network_hosts: Vec<String>,
     http_requests: Vec<HttpRequestGrant>,
+    any_http_request: bool,
     storage: bool,
     clipboard_read: bool,
     clipboard_write: bool,
@@ -164,6 +165,14 @@ impl Capabilities {
         self
     }
 
+    /// Allows any HTTP or HTTPS request, to any host, port, method and path —
+    /// for an embedder whose scripts are trusted with the network the way an
+    /// application is. Redirects still never downgrade HTTPS to HTTP.
+    pub fn any_http_request(mut self, allowed: bool) -> Self {
+        self.any_http_request = allowed;
+        self
+    }
+
     pub fn storage(mut self, allowed: bool) -> Self {
         self.storage = allowed;
         self
@@ -239,7 +248,8 @@ impl Capabilities {
         method: &str,
         path: &str,
     ) -> bool {
-        self.may_reach(host)
+        (self.any_http_request && matches!(scheme, "http" | "https"))
+            || self.may_reach(host)
             || self
                 .http_requests
                 .iter()
@@ -534,6 +544,16 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn any_http_request_reaches_every_host_over_http_and_https_only() {
+        let capabilities = Capabilities::new().any_http_request(true);
+        assert!(capabilities.may_request("https", "api.example.com", None, "POST", "/v1"));
+        assert!(capabilities.may_request("http", "localhost", Some(8000), "GET", "/"));
+        assert!(!capabilities.may_request("ftp", "example.com", None, "GET", "/"));
+        assert!(!capabilities.may_reach("example.com"), "no raw socket with it");
+        assert!(!Capabilities::new().may_request("https", "example.com", None, "GET", "/"));
     }
 
     #[test]
