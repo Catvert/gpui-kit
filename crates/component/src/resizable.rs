@@ -85,12 +85,20 @@ pub(crate) fn render_resize_handle(
         cx,
     );
 
+    // The resting colour is base's, as its own fallback line reads it: an
+    // application that projected a handle colour -- transparent, for panels
+    // already parted by a gutter -- gets it here too, and only the pill shows.
+    let hairline = gpui_base::Theme::global(cx)
+        .resizable
+        .handle
+        .unwrap_or(cx.theme().border);
+
     div()
         // The hairline fills the handle's content area exactly, so it has
         // nothing to give: shrinking it collapses the divider.
         .flex_none()
         .flex()
-        .bg(cx.theme().border)
+        .bg(hairline)
         // Along the hairline the pill is far shorter than the line, so centring
         // it there is safe. Across the hairline it is thicker than the line and
         // has to overhang, and neither flex alignment can be trusted to centre
