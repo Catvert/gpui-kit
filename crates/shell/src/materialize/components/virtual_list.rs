@@ -143,6 +143,16 @@ pub(in crate::materialize) fn virtual_list(
 
     let identity = ElementId::Name(SharedString::from(spec.id().to_owned()));
     let scroll = scroll_position(runtime, &behavior, &identity, window, cx);
+    crate::scroll_hook::seen(
+        &identity,
+        scroll.base_handle(),
+        match spec.axis() {
+            Axis::Vertical => crate::scroll_hook::ScrollAxes::VERTICAL,
+            Axis::Horizontal => crate::scroll_hook::ScrollAxes::HORIZONTAL,
+        },
+        window,
+        cx,
+    );
     let host = window.use_keyed_state((identity.clone(), "virtual-list"), cx, |_, _| VirtualItems);
 
     // Weak, so an element outliving its runtime renders nothing rather than

@@ -81,6 +81,7 @@ pub(crate) mod runtime;
 pub(crate) mod scope;
 mod script_callback;
 pub(crate) mod scroll;
+pub mod scroll_hook;
 pub mod snapshot;
 pub(crate) mod spec;
 pub(crate) mod storage;

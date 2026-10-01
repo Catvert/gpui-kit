@@ -2137,18 +2137,30 @@ fn flex_element(
     // `overflow_*_scrollbar` path above is deliberately left out of this: its
     // `Scrollable` owns a position of its own, on the inner area it builds.
     let stateful = match (scroll_x, scroll_y) {
-        (true, true) => {
-            components::scrollbar::track_scroll_position(stateful, &identity, window, cx)
-                .overflow_scroll()
-        }
-        (true, false) => {
-            components::scrollbar::track_scroll_position(stateful, &identity, window, cx)
-                .overflow_x_scroll()
-        }
-        (false, true) => {
-            components::scrollbar::track_scroll_position(stateful, &identity, window, cx)
-                .overflow_y_scroll()
-        }
+        (true, true) => components::scrollbar::track_scroll_position(
+            stateful,
+            &identity,
+            crate::scroll_hook::ScrollAxes::BOTH,
+            window,
+            cx,
+        )
+        .overflow_scroll(),
+        (true, false) => components::scrollbar::track_scroll_position(
+            stateful,
+            &identity,
+            crate::scroll_hook::ScrollAxes::HORIZONTAL,
+            window,
+            cx,
+        )
+        .overflow_x_scroll(),
+        (false, true) => components::scrollbar::track_scroll_position(
+            stateful,
+            &identity,
+            crate::scroll_hook::ScrollAxes::VERTICAL,
+            window,
+            cx,
+        )
+        .overflow_y_scroll(),
         (false, false) => stateful,
     };
     finish(stateful, refinement, children)

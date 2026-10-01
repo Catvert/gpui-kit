@@ -106,10 +106,13 @@ pub(in crate::materialize) fn scrollbar(
 pub(in crate::materialize) fn track_scroll_position<E: StatefulInteractiveElement>(
     element: E,
     identity: &ElementId,
+    axes: crate::scroll_hook::ScrollAxes,
     window: &mut Window,
     cx: &mut App,
 ) -> E {
-    element.track_scroll(&scroll_position(identity, window, cx))
+    let handle = scroll_position(identity, window, cx);
+    crate::scroll_hook::seen(identity, &handle, axes, window, cx);
+    element.track_scroll(&handle)
 }
 
 /// The scroll position shared by a scroll area and the bars driving it.

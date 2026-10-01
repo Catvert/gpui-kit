@@ -82,6 +82,17 @@ where
 {
     fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let scroll_handle = scroll_handle_for(&self.id, window, cx);
+        crate::scroll_hook::seen(
+            &self.id,
+            &scroll_handle,
+            match self.axis {
+                ScrollbarAxis::Vertical => crate::scroll_hook::ScrollAxes::VERTICAL,
+                ScrollbarAxis::Horizontal => crate::scroll_hook::ScrollAxes::HORIZONTAL,
+                ScrollbarAxis::Both => crate::scroll_hook::ScrollAxes::BOTH,
+            },
+            window,
+            cx,
+        );
 
         // Preserve the caller-requested size on the wrapper, while keeping the
         // caller's element as the actual scroll-tracked layout container.

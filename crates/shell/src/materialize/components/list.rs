@@ -101,6 +101,14 @@ pub(in crate::materialize) fn list(
             shared_scroll_position(&identity.clone(), window, cx).update(cx, |shared, _| {
                 *shared = SharedScroll::Uniform(scroll.clone())
             });
+            let base = scroll.0.borrow().base_handle.clone();
+            crate::scroll_hook::seen(
+                &identity,
+                &base,
+                crate::scroll_hook::ScrollAxes::VERTICAL,
+                window,
+                cx,
+            );
 
             let mut list = uniform_list(identity.clone(), item_count, move |range, window, cx| {
                 render_range(&weak, get_key, render_items, handlers, range, window, cx)
