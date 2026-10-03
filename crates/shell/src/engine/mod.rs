@@ -128,7 +128,7 @@ pub(crate) mod quickjs;
 #[cfg(test)]
 pub(crate) use quickjs::ViewType;
 #[cfg(feature = "quickjs")]
-pub use quickjs::{LoadedApplication, ShellRuntime, ViewObject};
+pub use quickjs::{ApplicationInstance, LoadedApplication, ShellRuntime, ViewObject};
 
 /// Points the script-visible store at its backing file.
 ///
