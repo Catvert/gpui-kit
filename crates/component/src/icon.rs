@@ -149,6 +149,18 @@ impl Icon {
         self.style == other.style && self.size == other.size
     }
 
+    /// Whether `other` paints as this icon does, its transformation aside —
+    /// what a spinner compares before handing its view a new icon.
+    pub(crate) fn same_look(&self, other: &Self) -> bool {
+        self.same_layout(other)
+            && self.text_color == other.text_color
+            && match (&self.source, &other.source) {
+                (IconSource::Path(a), IconSource::Path(b)) => a == b,
+                (IconSource::Data(a), IconSource::Data(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
+
     /// Create a new view for the icon
     pub fn view(self, cx: &mut App) -> Entity<Icon> {
         cx.new(|_| self)
