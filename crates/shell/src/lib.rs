@@ -109,7 +109,7 @@ pub use component_registry::{
     MethodDescriptor, RegistryError, StateDescriptor, StateMethodDescriptor,
 };
 pub(crate) use component_registry::{ComponentCallbackValue, ComponentId, RecordedComponentMethod};
-pub use engine::{LoadedApplication, ShellRuntime};
+pub use engine::{ApplicationInstance, LoadedApplication, ShellRuntime};
 pub use error::ShellError;
 pub use gpui;
 pub use host_modules::{

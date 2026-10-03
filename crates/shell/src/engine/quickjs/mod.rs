@@ -894,6 +894,28 @@ pub struct LoadedApplication {
     mounted: Cell<bool>,
 }
 
+/// An entry's default export, which must be a view class: what an
+/// application mounted whole is.
+fn default_view_type<'js>(
+    ctx: &Ctx<'js>,
+    namespace: Object<'js>,
+    module_lease: Option<ApplicationModuleLease>,
+    application: Option<Rc<ApplicationGeneration>>,
+) -> JsResult<ViewType> {
+    let default: Value = namespace.get("default")?;
+    let Some(class) = default.as_object() else {
+        return Err(Exception::throw_message(
+            ctx,
+            "main.js must `export default` a class that extends View",
+        ));
+    };
+    Ok(ViewType {
+        value: Persistent::save(ctx, class.clone()),
+        module_lease,
+        application,
+    })
+}
+
 impl ViewType {
     /// A view class handed straight to the host rather than read off a
     /// module's default export.
@@ -1069,6 +1091,8 @@ mod dock_api;
 mod entity_api;
 pub(crate) mod host;
 mod host_modules;
+mod instance;
+pub use instance::ApplicationInstance;
 mod overlay;
 pub(crate) mod sandbox;
 mod scheduler;
@@ -2158,6 +2182,25 @@ impl ShellRuntime {
     /// its own files and the built-in modules, and nothing else. That is
     /// the first half of the sandbox's module policy (design doc §19.1).
     pub(crate) fn load_app(self: &Rc<Self>, dir: &Path, entry: &str) -> Result<ViewType> {
+        self.evaluate_app(dir, entry, default_view_type)
+    }
+
+    /// Evaluates an application's entry as [`Self::load_app`] does, and hands
+    /// `read` the entry's namespace to take what it needs from it.
+    ///
+    /// A `read` that fails releases the generation the evaluation opened, as a
+    /// module that fails to evaluate does.
+    fn evaluate_app<T>(
+        self: &Rc<Self>,
+        dir: &Path,
+        entry: &str,
+        read: impl for<'js> FnOnce(
+            &Ctx<'js>,
+            Object<'js>,
+            Option<ApplicationModuleLease>,
+            Option<Rc<ApplicationGeneration>>,
+        ) -> JsResult<T>,
+    ) -> Result<T> {
         let root = crate::runtime::resolve_app_root(dir, entry)?;
         if let Err(error) = self.write_type_declarations(&root) {
             tracing::debug!(
@@ -2212,6 +2255,7 @@ impl ShellRuntime {
             &source,
             Some(module_lease),
             Some(application.clone()),
+            read,
         );
         if loaded.is_err() {
             self.release_application_generation_without_context(&application);
@@ -2223,34 +2267,28 @@ impl ShellRuntime {
     /// class.
     #[cfg(test)]
     pub(crate) fn load_source(self: &Rc<Self>, name: &str, source: &str) -> Result<ViewType> {
-        self.load_source_with_lease(name, source, None, None)
+        self.load_source_with_lease(name, source, None, None, default_view_type)
     }
 
-    fn load_source_with_lease(
+    fn load_source_with_lease<T>(
         self: &Rc<Self>,
         name: &str,
         source: &str,
         module_lease: Option<ApplicationModuleLease>,
         application: Option<Rc<ApplicationGeneration>>,
-    ) -> Result<ViewType> {
+        read: impl for<'js> FnOnce(
+            &Ctx<'js>,
+            Object<'js>,
+            Option<ApplicationModuleLease>,
+            Option<Rc<ApplicationGeneration>>,
+        ) -> JsResult<T>,
+    ) -> Result<T> {
         self.with_jit_suspended(|| {
             self.with_js(|ctx| {
                 let (module, promise) =
                     rquickjs::Module::declare(ctx.clone(), name, source)?.eval()?;
                 promise.finish::<()>()?;
-
-                let default: Value = module.get("default")?;
-                let Some(class) = default.as_object() else {
-                    return Err(Exception::throw_message(
-                        ctx,
-                        "main.js must `export default` a class that extends View",
-                    ));
-                };
-                Ok(ViewType {
-                    value: Persistent::save(ctx, class.clone()),
-                    module_lease,
-                    application,
-                })
+                read(ctx, module.namespace()?, module_lease, application)
             })
         })
     }
@@ -10346,6 +10384,7 @@ export default class Panel extends View { render() { return div(); } }
                 "import { label } from 'omarchy-ui'; import { tone } from 'omarchy-ui/theme.js'; export default class Panel { static label() { return `${label}:${tone}`; } }",
                 Some(lease),
                 None,
+                super::default_view_type,
             )
             .expect("third-party module graph");
 
@@ -10400,6 +10439,7 @@ export default class Panel extends View { render() { return div(); } }
                 "import 'third-party'; export default class Panel {}",
                 Some(lease),
                 None,
+                super::default_view_type,
             )
             .expect_err("dependency traversal must be refused");
 
